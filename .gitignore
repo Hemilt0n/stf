@@ -3,5 +3,4 @@
 __pycache__/
 *.pyc
 runs/
-/data/
-data
+/data
