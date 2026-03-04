@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stf"
+version = "0.1.0"
+description = "Spatio-temporal fusion research toolkit (STFDiff + Flow)"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+authors = [
+  { name = "STF Contributors" }
+]
+dependencies = [
+  "torch>=2.5",
+  "torchvision>=0.20",
+  "numpy>=1.24",
+  "tifffile>=2023.7.10",
+  "scikit-image>=0.22",
+  "scipy>=1.11",
+  "opencv-python>=4.8",
+  "ema-pytorch>=0.7.0",
+  "termcolor>=2.4",
+  "pandas>=2.0",
+  "tensorboard>=2.14",
+  "einops>=0.7",
+  "tqdm>=4.66",
+  "typing-extensions>=4.10",
+]
+
+[project.urls]
+Repository = "https://example.invalid/stf"
+
+[project.scripts]
+stf = "stf.cli.main:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
