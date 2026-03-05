@@ -14,10 +14,10 @@ dataset = SpatioTemporalFusionDataset(
     dataset_name="toy",
     data_root="data/toy/formal/train",
     data_prefix_tmpl_dict={
-        "fine_img_01": "L_01",
-        "fine_img_02": "L_02",
-        "coarse_img_01": "M_01",
-        "coarse_img_02": "M_02",
+        "fine_img_01": "Landsat_01",
+        "fine_img_02": "Landsat_02",
+        "coarse_img_01": "MODIS_01",
+        "coarse_img_02": "MODIS_02",
     },
     data_name_tmpl_dict={
         "fine_img_01": "{}_L_{}",
@@ -28,7 +28,7 @@ dataset = SpatioTemporalFusionDataset(
     is_serialize_data=True,
     transform_func_list=[
         LoadData(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"]),
-        RescaleToMinusOneOne(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"], data_range=[0, 1]),
+        RescaleToMinusOneOne(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"], data_range=[0, 100]),
         Format(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"]),
     ],
 )
@@ -48,8 +48,8 @@ val_loader = DataLoader(
 )
 
 model = GaussianDiffusion(
-    model=PredNoiseNet(dim=64, channels=4, out_dim=4, dim_mults=(1, 2, 4)),
-    image_size=128,
+    model=PredNoiseNet(dim=64, channels=3, out_dim=3, dim_mults=(1, 2, 4)),
+    image_size=256,
     timesteps=100,
     sampling_timesteps=50,
     objective="pred_x0",

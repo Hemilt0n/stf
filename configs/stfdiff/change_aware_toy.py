@@ -7,8 +7,10 @@ from stf.config.types import DataConfig, ExperimentConfig, IOConfig, TrainConfig
 from stf.data import EpochBasedSampler, SpatioTemporalFusionDataset
 from stf.data.transforms import Format, LoadData, RescaleToMinusOneOne
 from stf.metrics import CC, ERGAS, MAE, PSNR, RMSE, SAM, SSIM, UIQI
-from stf.models import FlowMatching, PredTrajNet
+from stf.models import GaussianDiffusion, PredNoiseNet
 
+
+KEYS = ["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"]
 
 dataset = SpatioTemporalFusionDataset(
     dataset_name="toy",
@@ -27,9 +29,9 @@ dataset = SpatioTemporalFusionDataset(
     },
     is_serialize_data=True,
     transform_func_list=[
-        LoadData(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"]),
-        RescaleToMinusOneOne(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"], data_range=[0, 100]),
-        Format(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"]),
+        LoadData(key_list=KEYS),
+        RescaleToMinusOneOne(key_list=KEYS, data_range=[0, 100]),
+        Format(key_list=KEYS),
     ],
 )
 
@@ -47,21 +49,36 @@ val_loader = DataLoader(
     num_workers=0,
 )
 
-model = FlowMatching(
-    model=PredTrajNet(dim=64, channels=3, out_dim=3, dim_mults=(1, 2, 4)),
-    loss_type="l1",
-    num_steps=20,
+model = GaussianDiffusion(
+    model=PredNoiseNet(dim=64, channels=3, out_dim=3, dim_mults=(1, 2, 4)),
+    image_size=256,
+    timesteps=100,
+    sampling_timesteps=50,
+    objective="pred_x0",
+    ddim_sampling_eta=0.0,
+    condition_dropout_p=0.1,
+    change_loss_weight=1.0,
+    coarse_consistency_weight=0.2,
+    coarse_consistency_loss_type="l1",
 )
 
 EXPERIMENT = ExperimentConfig(
-    task="flow",
-    name="minimal",
+    task="stfdiff",
+    name="change_aware_toy",
     model=model,
-    optimizer=partial(torch.optim.Adam, lr=2e-5),
-    scheduler=None,
-    metrics=[RMSE(), MAE(), PSNR(max_value=1.0), SSIM(data_range=1.0), ERGAS(ratio=1.0 / 16.0), CC(), SAM(), UIQI()],
+    optimizer=partial(torch.optim.Adam, lr=1e-4),
+    scheduler=partial(torch.optim.lr_scheduler.ReduceLROnPlateau, mode="min", factor=0.5, patience=5),
+    metrics=[
+        RMSE(),
+        MAE(),
+        PSNR(max_value=1.0),
+        SSIM(data_range=1.0),
+        ERGAS(ratio=1.0 / 16.0),
+        CC(),
+        SAM(),
+        UIQI(),
+    ],
     data=DataConfig(train_dataloader=train_loader, val_dataloader=val_loader),
-    train=TrainConfig(max_epochs=1, val_interval=1, save_interval=1, use_ema=True, use_mixed_precision=True),
-    io=IOConfig(output_root="runs", save_images=False, show_images=False, show_bands=(2, 1, 0)),
-    resume_from=None,
+    train=TrainConfig(max_epochs=1, val_interval=1, save_interval=1),
+    io=IOConfig(output_root="runs", save_images=False, show_images=False),
 )

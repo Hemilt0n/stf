@@ -5,14 +5,60 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 
+
 def default(val, d):
     if val is not None:
         return val
     return d() if callable(d) else d
 
+
 def compute_volume(x):
     """计算图像体积（可被重写以实现不同的体积定义）"""
     return x.sum(dim=(1, 2, 3))  # [b]
+
+
+def maybe_apply_condition_dropout(condition, dropout_p: float, training: bool):
+    if dropout_p <= 0.0 or not training:
+        return condition
+    keep_mask = (
+        torch.rand(condition.shape[0], 1, 1, 1, device=condition.device) >= dropout_p
+    ).type_as(condition)
+    return condition * keep_mask
+
+
+def build_change_weight_map(
+    coarse_img_01, coarse_img_02, target_spatial_shape, change_loss_weight: float
+):
+    if change_loss_weight <= 0.0:
+        return None
+    change_map = torch.mean(torch.abs(coarse_img_02 - coarse_img_01), dim=1, keepdim=True)
+    if change_map.shape[-2:] != target_spatial_shape:
+        change_map = F.interpolate(
+            change_map,
+            size=target_spatial_shape,
+            mode='bilinear',
+            align_corners=False,
+        )
+    denom = change_map.detach().mean(dim=(-2, -1), keepdim=True).clamp(min=1e-6)
+    norm_change = change_map / denom
+    return 1.0 + change_loss_weight * norm_change
+
+
+def coarse_consistency_loss(
+    pred_fine_img_02, coarse_img_02, loss_type: str = 'l1'
+):
+    pred_coarse = pred_fine_img_02
+    if pred_coarse.shape[-2:] != coarse_img_02.shape[-2:]:
+        pred_coarse = F.interpolate(
+            pred_coarse,
+            size=coarse_img_02.shape[-2:],
+            mode='bilinear',
+            align_corners=False,
+        )
+    if loss_type == 'l2':
+        return F.mse_loss(pred_coarse, coarse_img_02)
+    return F.l1_loss(pred_coarse, coarse_img_02)
+
 
 class FlowMatching(nn.Module):
     def __init__(
@@ -20,11 +66,17 @@ class FlowMatching(nn.Module):
         model,
         loss_type='l2',
         num_steps=20,
+        change_loss_weight=0.0,
+        coarse_consistency_weight=0.0,
+        coarse_consistency_loss_type='l1',
     ):
         super().__init__()
         self.model = model
         self.loss_type = loss_type
         self.num_steps = num_steps
+        self.change_loss_weight = change_loss_weight
+        self.coarse_consistency_weight = coarse_consistency_weight
+        self.coarse_consistency_loss_type = coarse_consistency_loss_type
 
     @property
     def loss_fn(self):
@@ -52,8 +104,27 @@ class FlowMatching(nn.Module):
         # Predict the vector field
         pred_u_t = self.model(x_t, t.squeeze(), coarse_img_01, coarse_img_02)
 
-        # Calculate the loss
-        loss = self.loss_fn(pred_u_t, u_t)
+        # Base reconstruction loss in vector-field space.
+        per_pixel_loss = self.loss_fn(pred_u_t, u_t, reduction='none')
+        weight_map = build_change_weight_map(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=u_t.shape[-2:],
+            change_loss_weight=self.change_loss_weight,
+        )
+        if weight_map is not None:
+            per_pixel_loss = per_pixel_loss * weight_map
+
+        loss = per_pixel_loss.mean()
+
+        if self.coarse_consistency_weight > 0.0:
+            pred_fine_img_02 = fine_img_01 + pred_u_t
+            cst_loss = coarse_consistency_loss(
+                pred_fine_img_02,
+                coarse_img_02,
+                loss_type=self.coarse_consistency_loss_type,
+            )
+            loss = loss + self.coarse_consistency_weight * cst_loss
         return loss
 
     @torch.no_grad()
@@ -88,6 +159,10 @@ class GaussianFlowMatching(nn.Module):
         path_schedule='linear',
         path_power=1.0,
         volume_consistency_weight=0.0,
+        condition_dropout_p=0.0,
+        change_loss_weight=0.0,
+        coarse_consistency_weight=0.0,
+        coarse_consistency_loss_type='l1',
     ):
         super().__init__()
         self.model = model
@@ -97,6 +172,10 @@ class GaussianFlowMatching(nn.Module):
         self.path_schedule = path_schedule
         self.path_power = path_power
         self.volume_consistency_weight = volume_consistency_weight
+        self.condition_dropout_p = condition_dropout_p
+        self.change_loss_weight = change_loss_weight
+        self.coarse_consistency_weight = coarse_consistency_weight
+        self.coarse_consistency_loss_type = coarse_consistency_loss_type
 
     @property
     def loss_fn(self):
@@ -144,11 +223,33 @@ class GaussianFlowMatching(nn.Module):
         # Target vector field
         u_t = alpha_prime * (fine_img_02 - noise)
 
-        pred_u_t = self.model(
-            coarse_img_01, coarse_img_02, fine_img_01, x_t, t.squeeze()
+        fine_img_01_cond = maybe_apply_condition_dropout(
+            fine_img_01, self.condition_dropout_p, self.training
         )
-        loss = self.loss_fn(pred_u_t, u_t)
-        
+        pred_u_t = self.model(
+            coarse_img_01, coarse_img_02, fine_img_01_cond, x_t, t.squeeze()
+        )
+        per_pixel_loss = self.loss_fn(pred_u_t, u_t, reduction='none')
+        weight_map = build_change_weight_map(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=u_t.shape[-2:],
+            change_loss_weight=self.change_loss_weight,
+        )
+        if weight_map is not None:
+            per_pixel_loss = per_pixel_loss * weight_map
+        loss = per_pixel_loss.mean()
+
+        if self.coarse_consistency_weight > 0.0:
+            alpha_prime_safe = alpha_prime.clamp(min=1e-3)
+            pred_fine_img_02 = noise + pred_u_t / alpha_prime_safe
+            cst_loss = coarse_consistency_loss(
+                pred_fine_img_02,
+                coarse_img_02,
+                loss_type=self.coarse_consistency_loss_type,
+            )
+            loss = loss + self.coarse_consistency_weight * cst_loss
+
         # Volume consistency loss at final state (t=1)
         if self.volume_consistency_weight > 0:
             fine_volume = compute_volume(fine_img_02)
@@ -195,6 +296,9 @@ class ResidualGaussianFlowMatching(nn.Module):
         path_power=1.0,
         coarse_weight=1.0,
         volume_consistency_weight=0.0,
+        change_loss_weight=0.0,
+        coarse_consistency_weight=0.0,
+        coarse_consistency_loss_type='l1',
     ):
         super().__init__()
         self.model = model
@@ -205,6 +309,9 @@ class ResidualGaussianFlowMatching(nn.Module):
         self.path_power = path_power
         self.coarse_weight = coarse_weight
         self.volume_consistency_weight = volume_consistency_weight
+        self.change_loss_weight = change_loss_weight
+        self.coarse_consistency_weight = coarse_consistency_weight
+        self.coarse_consistency_loss_type = coarse_consistency_loss_type
 
     @property
     def loss_fn(self):
@@ -255,8 +362,28 @@ class ResidualGaussianFlowMatching(nn.Module):
         u_t = alpha_prime * (delta - z)
 
         pred_u_t = self.model(x_t, t.squeeze(), coarse_img_01, coarse_img_02)
-        loss = self.loss_fn(pred_u_t, u_t)
-        
+        per_pixel_loss = self.loss_fn(pred_u_t, u_t, reduction='none')
+        weight_map = build_change_weight_map(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=u_t.shape[-2:],
+            change_loss_weight=self.change_loss_weight,
+        )
+        if weight_map is not None:
+            per_pixel_loss = per_pixel_loss * weight_map
+        loss = per_pixel_loss.mean()
+
+        if self.coarse_consistency_weight > 0.0:
+            alpha_prime_safe = alpha_prime.clamp(min=1e-3)
+            pred_delta = z + pred_u_t / alpha_prime_safe
+            pred_fine_img_02 = fine_img_01 + pred_delta
+            cst_loss = coarse_consistency_loss(
+                pred_fine_img_02,
+                coarse_img_02,
+                loss_type=self.coarse_consistency_loss_type,
+            )
+            loss = loss + self.coarse_consistency_weight * cst_loss
+
         # Volume consistency loss at final state (t=1)
         if self.volume_consistency_weight > 0:
             fine_volume = compute_volume(fine_img_02)
