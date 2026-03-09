@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import torch
@@ -56,8 +57,16 @@ class EvalEngine(BaseEngine):
 
                 pred_for_metrics = (outputs + 1.0) / 2.0
                 gt_for_metrics = (gt + 1.0) / 2.0
+                ref_for_metrics = (batch["fine_img_01"].to(self.device) + 1.0) / 2.0
                 for metric in self.metrics:
-                    tracker.update(metric.__name__, float(metric(gt_for_metrics, pred_for_metrics).item()))
+                    num_params = len(inspect.signature(metric.forward).parameters)
+                    if num_params >= 3:
+                        value = float(
+                            metric(gt_for_metrics, pred_for_metrics, ref_for_metrics).item()
+                        )
+                    else:
+                        value = float(metric(gt_for_metrics, pred_for_metrics).item())
+                    tracker.update(metric.__name__, value)
 
             if self.experiment.io.save_images or self.experiment.io.show_images:
                 keys = batch.get("key", [str(i) for i in range(outputs.shape[0])])

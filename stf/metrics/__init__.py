@@ -6,5 +6,6 @@ from .sam import SAM
 from .cc import CC
 from .uiqi import UIQI
 from .ergas import ERGAS
+from .trp import TRP
 
-__all__ = ['MAE', 'PSNR', 'RMSE', 'SSIM', 'SAM', 'CC', 'UIQI', 'ERGAS']
+__all__ = ['MAE', 'PSNR', 'RMSE', 'SSIM', 'SAM', 'CC', 'UIQI', 'ERGAS', 'TRP']

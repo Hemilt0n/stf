@@ -33,6 +33,47 @@ def identity(t, *args, **kwargs):
     return t
 
 
+def maybe_apply_condition_dropout(condition, dropout_p: float, training: bool):
+    if dropout_p <= 0.0 or not training:
+        return condition
+    keep_mask = (
+        torch.rand(condition.shape[0], 1, 1, 1, device=condition.device) >= dropout_p
+    ).type_as(condition)
+    return condition * keep_mask
+
+
+def build_change_weight_map(
+    coarse_img_01, coarse_img_02, target_spatial_shape, change_loss_weight: float
+):
+    if change_loss_weight <= 0.0:
+        return None
+    change_map = torch.mean(torch.abs(coarse_img_02 - coarse_img_01), dim=1, keepdim=True)
+    if change_map.shape[-2:] != target_spatial_shape:
+        change_map = F.interpolate(
+            change_map,
+            size=target_spatial_shape,
+            mode='bilinear',
+            align_corners=False,
+        )
+    denom = change_map.detach().mean(dim=(-2, -1), keepdim=True).clamp(min=1e-6)
+    norm_change = change_map / denom
+    return 1.0 + change_loss_weight * norm_change
+
+
+def coarse_consistency_loss(pred_fine_img_02, coarse_img_02, loss_type='l1'):
+    pred_coarse = pred_fine_img_02
+    if pred_coarse.shape[-2:] != coarse_img_02.shape[-2:]:
+        pred_coarse = F.interpolate(
+            pred_coarse,
+            size=coarse_img_02.shape[-2:],
+            mode='bilinear',
+            align_corners=False,
+        )
+    if loss_type == 'l2':
+        return F.mse_loss(pred_coarse, coarse_img_02)
+    return F.l1_loss(pred_coarse, coarse_img_02)
+
+
 # gaussian diffusion trainer class
 
 
@@ -76,6 +117,10 @@ class GaussianDiffusion(nn.Module):
         p2_loss_weight_gamma=0.0,  # p2 loss weight, from https://arxiv.org/abs/2204.00227 - 0 is equivalent to weight of 1 across time - 1. is recommended
         p2_loss_weight_k=1,
         ddim_sampling_eta=1.0,
+        condition_dropout_p=0.0,
+        change_loss_weight=0.0,
+        coarse_consistency_weight=0.0,
+        coarse_consistency_loss_type='l1',
     ):
         super().__init__()
         # assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
@@ -115,6 +160,11 @@ class GaussianDiffusion(nn.Module):
         self.sampling_timesteps = default(
             sampling_timesteps, timesteps
         )  # default num sampling timesteps to number of timesteps at training
+
+        self.condition_dropout_p = condition_dropout_p
+        self.change_loss_weight = change_loss_weight
+        self.coarse_consistency_weight = coarse_consistency_weight
+        self.coarse_consistency_loss_type = coarse_consistency_loss_type
 
         assert self.sampling_timesteps <= timesteps
         self.is_ddim_sampling = self.sampling_timesteps < timesteps
@@ -441,8 +491,11 @@ class GaussianDiffusion(nn.Module):
 
         # predict and take gradient step
 
+        fine_img_01_cond = maybe_apply_condition_dropout(
+            fine_img_01, self.condition_dropout_p, self.training
+        )
         model_out = self.model(
-            coarse_img_01, coarse_img_02, fine_img_01, noisy_fine_img_02, t
+            coarse_img_01, coarse_img_02, fine_img_01_cond, noisy_fine_img_02, t
         )
 
         if self.objective == 'pred_noise':
@@ -454,11 +507,38 @@ class GaussianDiffusion(nn.Module):
         else:
             raise ValueError(f'unknown objective {self.objective}')
 
-        loss = self.loss_fn(model_out, target, reduction='none')
-        loss = reduce(loss, 'b ... -> b (...)', 'mean')
+        per_pixel_loss = self.loss_fn(model_out, target, reduction='none')
+        weight_map = build_change_weight_map(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=target.shape[-2:],
+            change_loss_weight=self.change_loss_weight,
+        )
+        if weight_map is not None:
+            per_pixel_loss = per_pixel_loss * weight_map
 
-        loss = loss * extract(self.p2_loss_weight, t, loss.shape)
-        return loss.mean()
+        denoise_loss = reduce(per_pixel_loss, 'b ... -> b (...)', 'mean')
+        denoise_loss = denoise_loss * extract(self.p2_loss_weight, t, denoise_loss.shape)
+        denoise_loss = denoise_loss.mean()
+
+        if self.coarse_consistency_weight <= 0.0:
+            return denoise_loss
+
+        if self.objective == 'pred_x0':
+            pred_fine_img_02 = model_out
+        elif self.objective == 'pred_noise':
+            pred_fine_img_02 = self.predict_start_from_noise(noisy_fine_img_02, t, model_out)
+        elif self.objective == 'pred_residual':
+            pred_fine_img_02 = fine_img_01 + model_out
+        else:
+            raise ValueError(f'unknown objective {self.objective}')
+
+        cst_loss = coarse_consistency_loss(
+            pred_fine_img_02,
+            coarse_img_02,
+            loss_type=self.coarse_consistency_loss_type,
+        )
+        return denoise_loss + self.coarse_consistency_weight * cst_loss
 
     def forward(self, coarse_img_01, coarse_img_02, fine_img_01, fine_img_02):
         (
