@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from stf.config.types import DataConfig, ExperimentConfig, IOConfig, TrainConfig
 from stf.data import EpochBasedSampler, SpatioTemporalFusionDataset
 from stf.data.transforms import Format, LoadData, RescaleToMinusOneOne
-from stf.metrics import CC, ERGAS, MAE, PSNR, RMSE, SAM, SSIM, UIQI
+from stf.metrics import CC, ERGAS, MAE, PSNR, RMSE, SAM, SSIM, TRP, UIQI
 from stf.models import FlowMatching, PredTrajNet
 
 
@@ -96,6 +96,7 @@ EXPERIMENT = ExperimentConfig(
         CC(),
         SAM(),
         UIQI(),
+        TRP(change_aware=True),
     ],
     data=DataConfig(train_dataloader=train_loader, val_dataloader=val_loader),
     train=TrainConfig(max_epochs=1, val_interval=1, save_interval=1),

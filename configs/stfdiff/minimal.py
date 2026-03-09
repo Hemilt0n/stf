@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from stf.config.types import DataConfig, ExperimentConfig, IOConfig, TrainConfig
 from stf.data import EpochBasedSampler, SpatioTemporalFusionDataset
 from stf.data.transforms import Format, LoadData, RescaleToMinusOneOne
-from stf.metrics import CC, ERGAS, MAE, PSNR, RMSE, SAM, SSIM, UIQI
+from stf.metrics import CC, ERGAS, MAE, PSNR, RMSE, SAM, SSIM, TRP, UIQI
 from stf.models import GaussianDiffusion, PredNoiseNet
 
 
@@ -90,7 +90,7 @@ EXPERIMENT = ExperimentConfig(
         factor=0.5,
         patience=5,
     ),
-    metrics=[RMSE(), MAE(), PSNR(max_value=1.0), SSIM(data_range=1.0), ERGAS(ratio=1.0 / 16.0), CC(), SAM(), UIQI()],
+    metrics=[RMSE(), MAE(), PSNR(max_value=1.0), SSIM(data_range=1.0), ERGAS(ratio=1.0 / 16.0), CC(), SAM(), UIQI(), TRP()],
     data=DataConfig(train_dataloader=train_loader, val_dataloader=val_loader),
     train=TrainConfig(max_epochs=1, val_interval=1, save_interval=1, use_ema=True, use_mixed_precision=True),
     io=IOConfig(output_root="runs", save_images=False, show_images=False, show_bands=(2, 1, 0)),
