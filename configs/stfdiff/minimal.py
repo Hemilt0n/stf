@@ -10,7 +10,7 @@ from stf.metrics import CC, ERGAS, MAE, PSNR, RMSE, SAM, SSIM, UIQI
 from stf.models import GaussianDiffusion, PredNoiseNet
 
 
-dataset = SpatioTemporalFusionDataset(
+train_dataset = SpatioTemporalFusionDataset(
     dataset_name="toy",
     data_root="data/toy/formal/train",
     data_prefix_tmpl_dict={
@@ -34,16 +34,39 @@ dataset = SpatioTemporalFusionDataset(
 )
 
 train_loader = DataLoader(
-    dataset=dataset,
+    dataset=train_dataset,
     batch_size=2,
-    sampler=EpochBasedSampler(dataset=dataset, is_shuffle=True, seed=42),
+    sampler=EpochBasedSampler(dataset=train_dataset, is_shuffle=True, seed=42),
     num_workers=0,
 )
 
+val_dataset = SpatioTemporalFusionDataset(
+    dataset_name="toy",
+    data_root="data/toy/formal/val",
+    data_prefix_tmpl_dict={
+        "fine_img_01": "Landsat_01",
+        "fine_img_02": "Landsat_02",
+        "coarse_img_01": "MODIS_01",
+        "coarse_img_02": "MODIS_02",
+    },
+    data_name_tmpl_dict={
+        "fine_img_01": "{}_L_{}",
+        "fine_img_02": "{}_L_{}",
+        "coarse_img_01": "{}_M_{}",
+        "coarse_img_02": "{}_M_{}",
+    },
+    is_serialize_data=True,
+    transform_func_list=[
+        LoadData(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"]),
+        RescaleToMinusOneOne(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"], data_range=[0, 100]),
+        Format(key_list=["fine_img_01", "fine_img_02", "coarse_img_01", "coarse_img_02"]),
+    ],
+)
+
 val_loader = DataLoader(
-    dataset=dataset,
+    dataset=val_dataset,
     batch_size=2,
-    sampler=EpochBasedSampler(dataset=dataset, is_shuffle=False, seed=42),
+    sampler=EpochBasedSampler(dataset=val_dataset, is_shuffle=False, seed=42),
     num_workers=0,
 )
 
