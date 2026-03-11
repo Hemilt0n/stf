@@ -34,9 +34,9 @@
    - 不再使用旧式 `self.model(x_t, t, coarse1, coarse2)` 调用
 
 3. `master` 已同步上述接口统一改动，可在主干直接继续开发
-4. Flow baseline 上新增可选高频约束接口（默认全关闭，兼容旧配置）
+4. Flow family 上新增可选高频约束接口（默认全关闭，兼容旧配置）
    - 文件: `stf/models/flow.py`, `stf/models/hf_losses.py`
-   - 新参数（FlowMatching）:
+   - 新参数（`FlowMatching` / `GaussianFlowMatching` / `ResidualGaussianFlowMatching`）:
      - `grad_loss_weight`
      - `lap_loss_weight`, `lap_num_scales`
      - `ranking_loss_weight`, `ranking_margin`

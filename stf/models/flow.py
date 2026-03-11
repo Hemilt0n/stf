@@ -231,6 +231,15 @@ class GaussianFlowMatching(nn.Module):
         change_loss_weight=0.0,
         coarse_consistency_weight=0.0,
         coarse_consistency_loss_type='l1',
+        grad_loss_weight=0.0,
+        lap_loss_weight=0.0,
+        lap_num_scales=3,
+        ranking_loss_weight=0.0,
+        ranking_margin=0.0,
+        hf_mask_strategy='quantile',
+        hf_mask_quantile=0.8,
+        hf_mask_threshold=0.0,
+        hf_mask_topk_ratio=0.2,
     ):
         super().__init__()
         self.model = model
@@ -244,6 +253,15 @@ class GaussianFlowMatching(nn.Module):
         self.change_loss_weight = change_loss_weight
         self.coarse_consistency_weight = coarse_consistency_weight
         self.coarse_consistency_loss_type = coarse_consistency_loss_type
+        self.grad_loss_weight = grad_loss_weight
+        self.lap_loss_weight = lap_loss_weight
+        self.lap_num_scales = lap_num_scales
+        self.ranking_loss_weight = ranking_loss_weight
+        self.ranking_margin = ranking_margin
+        self.hf_mask_strategy = hf_mask_strategy
+        self.hf_mask_quantile = hf_mask_quantile
+        self.hf_mask_threshold = hf_mask_threshold
+        self.hf_mask_topk_ratio = hf_mask_topk_ratio
 
     @property
     def loss_fn(self):
@@ -253,6 +271,14 @@ class GaussianFlowMatching(nn.Module):
             return F.mse_loss
         else:
             raise ValueError(f'invalid loss type {self.loss_type}')
+
+    @property
+    def use_hf_losses(self):
+        return (
+            self.grad_loss_weight > 0.0
+            or self.lap_loss_weight > 0.0
+            or self.ranking_loss_weight > 0.0
+        )
 
     def _alpha_and_derivative(self, t):
         schedule = self.path_schedule.lower()
@@ -308,15 +334,52 @@ class GaussianFlowMatching(nn.Module):
             per_pixel_loss = per_pixel_loss * weight_map
         loss = per_pixel_loss.mean()
 
-        if self.coarse_consistency_weight > 0.0:
+        need_pred_fine = self.coarse_consistency_weight > 0.0 or self.use_hf_losses
+        pred_fine_img_02 = None
+        if need_pred_fine:
             alpha_prime_safe = alpha_prime.clamp(min=1e-3)
             pred_fine_img_02 = noise + pred_u_t / alpha_prime_safe
+
+        if self.coarse_consistency_weight > 0.0:
             cst_loss = coarse_consistency_loss(
                 pred_fine_img_02,
                 coarse_img_02,
                 loss_type=self.coarse_consistency_loss_type,
             )
             loss = loss + self.coarse_consistency_weight * cst_loss
+
+        if self.use_hf_losses:
+            change_mask = build_change_mask(
+                coarse_img_01,
+                coarse_img_02,
+                target_spatial_shape=fine_img_02.shape[-2:],
+                strategy=self.hf_mask_strategy,
+                quantile=self.hf_mask_quantile,
+                threshold=self.hf_mask_threshold,
+                topk_ratio=self.hf_mask_topk_ratio,
+            )
+
+            if self.grad_loss_weight > 0.0:
+                loss = loss + self.grad_loss_weight * gradient_l1_loss(
+                    pred_fine_img_02, fine_img_02, mask=change_mask
+                )
+
+            if self.lap_loss_weight > 0.0:
+                loss = loss + self.lap_loss_weight * laplacian_pyramid_l1_loss(
+                    pred_fine_img_02,
+                    fine_img_02,
+                    mask=change_mask,
+                    num_scales=self.lap_num_scales,
+                )
+
+            if self.ranking_loss_weight > 0.0:
+                loss = loss + self.ranking_loss_weight * ranking_prefer_target_loss(
+                    pred_fine_img_02,
+                    fine_img_02,
+                    fine_img_01,
+                    mask=change_mask,
+                    margin=self.ranking_margin,
+                )
 
         # Volume consistency loss at final state (t=1)
         if self.volume_consistency_weight > 0:
@@ -367,6 +430,15 @@ class ResidualGaussianFlowMatching(nn.Module):
         change_loss_weight=0.0,
         coarse_consistency_weight=0.0,
         coarse_consistency_loss_type='l1',
+        grad_loss_weight=0.0,
+        lap_loss_weight=0.0,
+        lap_num_scales=3,
+        ranking_loss_weight=0.0,
+        ranking_margin=0.0,
+        hf_mask_strategy='quantile',
+        hf_mask_quantile=0.8,
+        hf_mask_threshold=0.0,
+        hf_mask_topk_ratio=0.2,
     ):
         super().__init__()
         self.model = model
@@ -380,6 +452,15 @@ class ResidualGaussianFlowMatching(nn.Module):
         self.change_loss_weight = change_loss_weight
         self.coarse_consistency_weight = coarse_consistency_weight
         self.coarse_consistency_loss_type = coarse_consistency_loss_type
+        self.grad_loss_weight = grad_loss_weight
+        self.lap_loss_weight = lap_loss_weight
+        self.lap_num_scales = lap_num_scales
+        self.ranking_loss_weight = ranking_loss_weight
+        self.ranking_margin = ranking_margin
+        self.hf_mask_strategy = hf_mask_strategy
+        self.hf_mask_quantile = hf_mask_quantile
+        self.hf_mask_threshold = hf_mask_threshold
+        self.hf_mask_topk_ratio = hf_mask_topk_ratio
 
     @property
     def loss_fn(self):
@@ -389,6 +470,14 @@ class ResidualGaussianFlowMatching(nn.Module):
             return F.mse_loss
         else:
             raise ValueError(f'invalid loss type {self.loss_type}')
+
+    @property
+    def use_hf_losses(self):
+        return (
+            self.grad_loss_weight > 0.0
+            or self.lap_loss_weight > 0.0
+            or self.ranking_loss_weight > 0.0
+        )
 
     def _alpha_and_derivative(self, t):
         schedule = self.path_schedule.lower()
@@ -443,16 +532,53 @@ class ResidualGaussianFlowMatching(nn.Module):
             per_pixel_loss = per_pixel_loss * weight_map
         loss = per_pixel_loss.mean()
 
-        if self.coarse_consistency_weight > 0.0:
+        need_pred_fine = self.coarse_consistency_weight > 0.0 or self.use_hf_losses
+        pred_fine_img_02 = None
+        if need_pred_fine:
             alpha_prime_safe = alpha_prime.clamp(min=1e-3)
             pred_delta = z + pred_u_t / alpha_prime_safe
             pred_fine_img_02 = fine_img_01 + pred_delta
+
+        if self.coarse_consistency_weight > 0.0:
             cst_loss = coarse_consistency_loss(
                 pred_fine_img_02,
                 coarse_img_02,
                 loss_type=self.coarse_consistency_loss_type,
             )
             loss = loss + self.coarse_consistency_weight * cst_loss
+
+        if self.use_hf_losses:
+            change_mask = build_change_mask(
+                coarse_img_01,
+                coarse_img_02,
+                target_spatial_shape=fine_img_02.shape[-2:],
+                strategy=self.hf_mask_strategy,
+                quantile=self.hf_mask_quantile,
+                threshold=self.hf_mask_threshold,
+                topk_ratio=self.hf_mask_topk_ratio,
+            )
+
+            if self.grad_loss_weight > 0.0:
+                loss = loss + self.grad_loss_weight * gradient_l1_loss(
+                    pred_fine_img_02, fine_img_02, mask=change_mask
+                )
+
+            if self.lap_loss_weight > 0.0:
+                loss = loss + self.lap_loss_weight * laplacian_pyramid_l1_loss(
+                    pred_fine_img_02,
+                    fine_img_02,
+                    mask=change_mask,
+                    num_scales=self.lap_num_scales,
+                )
+
+            if self.ranking_loss_weight > 0.0:
+                loss = loss + self.ranking_loss_weight * ranking_prefer_target_loss(
+                    pred_fine_img_02,
+                    fine_img_02,
+                    fine_img_01,
+                    mask=change_mask,
+                    margin=self.ranking_margin,
+                )
 
         # Volume consistency loss at final state (t=1)
         if self.volume_consistency_weight > 0:

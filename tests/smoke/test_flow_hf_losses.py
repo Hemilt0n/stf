@@ -1,5 +1,6 @@
 import torch
 
+from stf.models import GaussianFlowMatching, PredTrajNet, ResidualGaussianFlowMatching
 from stf.models.hf_losses import (
     build_change_mask,
     gradient_l1_loss,
@@ -46,3 +47,37 @@ def test_ranking_loss_prefers_target_like_prediction():
         pred_like_ref, tgt, ref, mask=mask, margin=0.02
     )
     assert loss_like_tgt.item() < loss_like_ref.item()
+
+
+def test_gaussian_flow_matching_with_hf_losses_runs():
+    model = GaussianFlowMatching(
+        model=PredTrajNet(dim=32, channels=3, out_dim=3, dim_mults=(1, 2)),
+        num_steps=4,
+        grad_loss_weight=0.1,
+        lap_loss_weight=0.05,
+        ranking_loss_weight=0.05,
+        ranking_margin=0.02,
+    )
+    coarse_01 = torch.randn((2, 3, 16, 16))
+    coarse_02 = torch.randn((2, 3, 16, 16))
+    fine_01 = torch.randn((2, 3, 16, 16))
+    fine_02 = torch.randn((2, 3, 16, 16))
+    loss = model(coarse_01, coarse_02, fine_01, fine_02)
+    assert torch.isfinite(loss)
+
+
+def test_residual_gaussian_flow_matching_with_hf_losses_runs():
+    model = ResidualGaussianFlowMatching(
+        model=PredTrajNet(dim=32, channels=3, out_dim=3, dim_mults=(1, 2)),
+        num_steps=4,
+        grad_loss_weight=0.1,
+        lap_loss_weight=0.05,
+        ranking_loss_weight=0.05,
+        ranking_margin=0.02,
+    )
+    coarse_01 = torch.randn((2, 3, 16, 16))
+    coarse_02 = torch.randn((2, 3, 16, 16))
+    fine_01 = torch.randn((2, 3, 16, 16))
+    fine_02 = torch.randn((2, 3, 16, 16))
+    loss = model(coarse_01, coarse_02, fine_01, fine_02)
+    assert torch.isfinite(loss)
