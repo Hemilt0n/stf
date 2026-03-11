@@ -430,30 +430,26 @@ class PredTrajNet(nn.Module):
         learned_variance=False,
         learned_sinusoidal_cond=False,
         learned_sinusoidal_dim=16,
-        use_attention=False,  # Add this parameter to control attention usage
     ):
         super().__init__()
-
-        # determine dimensions
+        # Keep argument semantics aligned with PredNoiseNet. The only intended
+        # architectural difference is single-branch fusion instead of dual-branch
+        # clean/noisy processing.
         self.channels = channels
         self.self_condition = self_condition
         input_channels = channels * (2 if self_condition else 1)
 
         init_dim = default(init_dim, dim)
-        self.coarse_init_conv = nn.Conv2d(
-            input_channels * 2, init_dim, 3, 1, 1
-        )
+        self.fine_init_conv = nn.Conv2d(input_channels, init_dim, 3, 1, 1)
+        self.coarse_init_conv = nn.Conv2d(input_channels * 2, init_dim, 3, 1, 1)
         self.noisy_init_conv = nn.Conv2d(input_channels, init_dim, 3, 1, 1)
-        self.init_conv = nn.Conv2d(init_dim*2, init_dim, 1)
+        self.init_conv = nn.Conv2d(init_dim * 3, init_dim, 1)
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
-        # time embeddings
         time_dim = dim * 4
-
         self.learned_sinusoidal_cond = learned_sinusoidal_cond
-
         if learned_sinusoidal_cond:
             sinu_pos_emb = LearnedSinusoidalPosEmb(learned_sinusoidal_dim)
             fourier_dim = learned_sinusoidal_dim + 1
@@ -468,26 +464,17 @@ class PredTrajNet(nn.Module):
             nn.Linear(time_dim, time_dim),
         )
 
-        # layers
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
-
-        # Modified from PredNoiseNet: Use ResBlock instead of ResnetBlock
         block_klass = partial(ResBlock, groups=resnet_block_groups)
 
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
-            # Only add attention to deeper layers where dim_in >= 128 to save memory
-            use_attn = use_attention and dim_in >= 128
-
             self.downs.append(
                 nn.ModuleList(
                     [
                         block_klass(dim_in, dim_in, time_emb_dim=time_dim),
-                        # block_klass(dim_in, dim_in, time_emb_dim=time_dim),
-                        # Use LinearAttention conditionally based on use_attn
-                        LinearAttention(dim_in) if use_attn else nn.Identity(),
                         Downsample(dim_in, dim_out)
                         if not is_last
                         else nn.Conv2d(dim_in, dim_out, 3, padding=1),
@@ -496,23 +483,15 @@ class PredTrajNet(nn.Module):
             )
 
         mid_dim = dims[-1]
-        # Add attention to mid blocks conditionally
-        use_mid_attn = use_attention and mid_dim >= 128
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
-        self.mid_attn = Attention(mid_dim) if use_mid_attn else nn.Identity()
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == (len(in_out) - 1)
-            use_attn = use_attention and dim_out >= 128
-
             self.ups.append(
                 nn.ModuleList(
                     [
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        # block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
-                        # Use LinearAttention conditionally based on use_attn
-                        LinearAttention(dim_out) if use_attn else nn.Identity(),
                         Upsample(dim_out, dim_in)
                         if not is_last
                         else nn.Conv2d(dim_out, dim_in, 3, padding=1),
@@ -522,54 +501,66 @@ class PredTrajNet(nn.Module):
 
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
-
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
-    def forward(self, x_t, time, coarse_img_01, coarse_img_02):
-        # x_t is the input image at time t
-        # time is the time step
-        # coarse_img_01 and coarse_img_02 are the conditional images
-        
-        x_coarse = self.coarse_init_conv(
-            torch.cat((coarse_img_01, coarse_img_02), dim=1)
+    def _prepare_self_condition_inputs(
+        self,
+        fine_img_01,
+        noisy_fine_img_02,
+        coarse_img_01,
+        coarse_img_02,
+        x_self_cond=None,
+    ):
+        if not self.self_condition:
+            return fine_img_01, noisy_fine_img_02, coarse_img_01, coarse_img_02
+
+        if x_self_cond is None:
+            x_self_cond = torch.zeros_like(noisy_fine_img_02)
+
+        fine_in = torch.cat((x_self_cond, fine_img_01), dim=1)
+        noisy_in = torch.cat((x_self_cond, noisy_fine_img_02), dim=1)
+        coarse_01_in = torch.cat((x_self_cond, coarse_img_01), dim=1)
+        coarse_02_in = torch.cat((x_self_cond, coarse_img_02), dim=1)
+        return fine_in, noisy_in, coarse_01_in, coarse_02_in
+
+    def forward(
+        self,
+        coarse_img_01,
+        coarse_img_02,
+        fine_img_01,
+        noisy_fine_img_02,
+        time,
+        x_self_cond=None,
+    ):
+        fine_in, noisy_in, coarse_01_in, coarse_02_in = self._prepare_self_condition_inputs(
+            fine_img_01,
+            noisy_fine_img_02,
+            coarse_img_01,
+            coarse_img_02,
+            x_self_cond=x_self_cond,
         )
-        x_noisy = self.noisy_init_conv(x_t)
-        x = torch.cat((x_noisy, x_coarse), dim=1)
-        x = self.init_conv(x)
+
+        x_fine = self.fine_init_conv(fine_in)
+        x_coarse = self.coarse_init_conv(torch.cat((coarse_01_in, coarse_02_in), dim=1))
+        x_noisy = self.noisy_init_conv(noisy_in)
+        x = self.init_conv(torch.cat((x_fine, x_coarse, x_noisy), dim=1))
         r = x.clone()
 
         t = self.time_mlp(time)
         h = []
 
-        for block1, attn, downsample in self.downs:
-            x = block1(x, t)
+        for block, downsample in self.downs:
+            x = block(x, t)
             h.append(x)
-
-            # x = block2(x, t)
-            # Apply attention if it's not an Identity layer
-            if not isinstance(attn, nn.Identity):
-                x = x + attn(x)  # Residual connection with attention
-            # h.append(x)
-
             x = downsample(x)
 
         x = self.mid_block1(x, t)
-        # Apply attention if it's not an Identity layer
-        if not isinstance(self.mid_attn, nn.Identity):
-            x = x + self.mid_attn(x)  # Residual connection with attention
         x = self.mid_block2(x, t)
 
-        for block1, attn, upsample in self.ups:
+        for block, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
-            x = block1(x, t)
-
-            # x = torch.cat((x, h.pop()), dim=1)
-            # x = block2(x, t)
-            # Apply attention if it's not an Identity layer
-            if not isinstance(attn, nn.Identity):
-                x = x + attn(x)  # Residual connection with attention
-
+            x = block(x, t)
             x = upsample(x)
 
         x = torch.cat((x, r), dim=1)

@@ -102,7 +102,9 @@ class FlowMatching(nn.Module):
         u_t = fine_img_02 - fine_img_01
 
         # Predict the vector field
-        pred_u_t = self.model(x_t, t.squeeze(), coarse_img_01, coarse_img_02)
+        pred_u_t = self.model(
+            coarse_img_01, coarse_img_02, fine_img_01, x_t, t.squeeze()
+        )
 
         # Base reconstruction loss in vector-field space.
         per_pixel_loss = self.loss_fn(pred_u_t, u_t, reduction='none')
@@ -135,7 +137,9 @@ class FlowMatching(nn.Module):
 
         for t_step in range(self.num_steps):
             t = torch.full((fine_img_01.shape[0],), t_step * dt, device=device).type_as(fine_img_01)
-            pred_u_t = self.model(x_t, t, coarse_img_01, coarse_img_02)
+            pred_u_t = self.model(
+                coarse_img_01, coarse_img_02, fine_img_01, x_t, t
+            )
             x_t = x_t + pred_u_t * dt
         
         return x_t
@@ -361,7 +365,9 @@ class ResidualGaussianFlowMatching(nn.Module):
         x_t = (1 - alpha) * z + alpha * delta
         u_t = alpha_prime * (delta - z)
 
-        pred_u_t = self.model(x_t, t.squeeze(), coarse_img_01, coarse_img_02)
+        pred_u_t = self.model(
+            coarse_img_01, coarse_img_02, fine_img_01, x_t, t.squeeze()
+        )
         per_pixel_loss = self.loss_fn(pred_u_t, u_t, reduction='none')
         weight_map = build_change_weight_map(
             coarse_img_01,
@@ -411,7 +417,9 @@ class ResidualGaussianFlowMatching(nn.Module):
                 device=device,
                 dtype=dtype,
             )
-            pred_u_t = self.model(x_t, t, coarse_img_01, coarse_img_02)
+            pred_u_t = self.model(
+                coarse_img_01, coarse_img_02, fine_img_01, x_t, t
+            )
             x_t = x_t + pred_u_t * dt
 
         # Return reconstructed fine image by adding residual to fine_img_01
