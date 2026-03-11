@@ -5,6 +5,14 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 
+from .hf_losses import (
+    build_change_mask,
+    compute_change_map,
+    gradient_l1_loss,
+    laplacian_pyramid_l1_loss,
+    ranking_prefer_target_loss,
+)
+
 
 def default(val, d):
     if val is not None:
@@ -31,14 +39,9 @@ def build_change_weight_map(
 ):
     if change_loss_weight <= 0.0:
         return None
-    change_map = torch.mean(torch.abs(coarse_img_02 - coarse_img_01), dim=1, keepdim=True)
-    if change_map.shape[-2:] != target_spatial_shape:
-        change_map = F.interpolate(
-            change_map,
-            size=target_spatial_shape,
-            mode='bilinear',
-            align_corners=False,
-        )
+    change_map = compute_change_map(
+        coarse_img_01, coarse_img_02, target_spatial_shape=target_spatial_shape
+    )
     denom = change_map.detach().mean(dim=(-2, -1), keepdim=True).clamp(min=1e-6)
     norm_change = change_map / denom
     return 1.0 + change_loss_weight * norm_change
@@ -69,6 +72,15 @@ class FlowMatching(nn.Module):
         change_loss_weight=0.0,
         coarse_consistency_weight=0.0,
         coarse_consistency_loss_type='l1',
+        grad_loss_weight=0.0,
+        lap_loss_weight=0.0,
+        lap_num_scales=3,
+        ranking_loss_weight=0.0,
+        ranking_margin=0.0,
+        hf_mask_strategy='quantile',
+        hf_mask_quantile=0.8,
+        hf_mask_threshold=0.0,
+        hf_mask_topk_ratio=0.2,
     ):
         super().__init__()
         self.model = model
@@ -77,6 +89,15 @@ class FlowMatching(nn.Module):
         self.change_loss_weight = change_loss_weight
         self.coarse_consistency_weight = coarse_consistency_weight
         self.coarse_consistency_loss_type = coarse_consistency_loss_type
+        self.grad_loss_weight = grad_loss_weight
+        self.lap_loss_weight = lap_loss_weight
+        self.lap_num_scales = lap_num_scales
+        self.ranking_loss_weight = ranking_loss_weight
+        self.ranking_margin = ranking_margin
+        self.hf_mask_strategy = hf_mask_strategy
+        self.hf_mask_quantile = hf_mask_quantile
+        self.hf_mask_threshold = hf_mask_threshold
+        self.hf_mask_topk_ratio = hf_mask_topk_ratio
 
     @property
     def loss_fn(self):
@@ -87,8 +108,16 @@ class FlowMatching(nn.Module):
         else:
             raise ValueError(f'invalid loss type {self.loss_type}')
 
+    @property
+    def use_hf_losses(self):
+        return (
+            self.grad_loss_weight > 0.0
+            or self.lap_loss_weight > 0.0
+            or self.ranking_loss_weight > 0.0
+        )
+
     def forward(self, coarse_img_01, coarse_img_02, fine_img_01, fine_img_02):
-        b, c, h, w = fine_img_01.shape
+        b = fine_img_01.shape[0]
         device = fine_img_01.device
 
         # Sample time t
@@ -119,14 +148,49 @@ class FlowMatching(nn.Module):
 
         loss = per_pixel_loss.mean()
 
+        need_pred_fine = self.coarse_consistency_weight > 0.0 or self.use_hf_losses
+        pred_fine_img_02 = fine_img_01 + pred_u_t if need_pred_fine else None
+
         if self.coarse_consistency_weight > 0.0:
-            pred_fine_img_02 = fine_img_01 + pred_u_t
             cst_loss = coarse_consistency_loss(
                 pred_fine_img_02,
                 coarse_img_02,
                 loss_type=self.coarse_consistency_loss_type,
             )
             loss = loss + self.coarse_consistency_weight * cst_loss
+
+        if self.use_hf_losses:
+            change_mask = build_change_mask(
+                coarse_img_01,
+                coarse_img_02,
+                target_spatial_shape=fine_img_02.shape[-2:],
+                strategy=self.hf_mask_strategy,
+                quantile=self.hf_mask_quantile,
+                threshold=self.hf_mask_threshold,
+                topk_ratio=self.hf_mask_topk_ratio,
+            )
+
+            if self.grad_loss_weight > 0.0:
+                loss = loss + self.grad_loss_weight * gradient_l1_loss(
+                    pred_fine_img_02, fine_img_02, mask=change_mask
+                )
+
+            if self.lap_loss_weight > 0.0:
+                loss = loss + self.lap_loss_weight * laplacian_pyramid_l1_loss(
+                    pred_fine_img_02,
+                    fine_img_02,
+                    mask=change_mask,
+                    num_scales=self.lap_num_scales,
+                )
+
+            if self.ranking_loss_weight > 0.0:
+                loss = loss + self.ranking_loss_weight * ranking_prefer_target_loss(
+                    pred_fine_img_02,
+                    fine_img_02,
+                    fine_img_01,
+                    mask=change_mask,
+                    margin=self.ranking_margin,
+                )
         return loss
 
     @torch.no_grad()

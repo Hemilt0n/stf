@@ -34,6 +34,13 @@
    - 不再使用旧式 `self.model(x_t, t, coarse1, coarse2)` 调用
 
 3. `master` 已同步上述接口统一改动，可在主干直接继续开发
+4. Flow baseline 上新增可选高频约束接口（默认全关闭，兼容旧配置）
+   - 文件: `stf/models/flow.py`, `stf/models/hf_losses.py`
+   - 新参数（FlowMatching）:
+     - `grad_loss_weight`
+     - `lap_loss_weight`, `lap_num_scales`
+     - `ranking_loss_weight`, `ranking_margin`
+     - `hf_mask_strategy`, `hf_mask_quantile`, `hf_mask_threshold`, `hf_mask_topk_ratio`
 
 ## 4. 当前接口硬约束
 
@@ -56,6 +63,15 @@ toy 配置快速训练（按需二选一）:
 ```bash
 uv run stf train --config configs/flow/change_aware_toy.py
 uv run stf train --config configs/stfdiff/change_aware_toy.py
+```
+
+高频约束最小实验矩阵（Flow）:
+
+```bash
+uv run stf train --config configs/flow/change_aware_toy.py
+uv run stf train --config configs/flow/change_aware_toy_hf_grad.py
+uv run stf train --config configs/flow/change_aware_toy_hf_grad_lap.py
+uv run stf train --config configs/flow/change_aware_toy_hf_grad_lap_rank.py
 ```
 
 ## 6. 常见告警与说明
