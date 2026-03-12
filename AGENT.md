@@ -2,14 +2,14 @@
 
 本文件用于会话交接与快速恢复上下文。新一轮开发前，请先阅读此文件与 `README.md`。
 
-## 1. 当前状态（2026-03-11）
+## 1. 当前状态（2026-03-12）
 
 - 仓库路径: `/home/hang/repos/stf`
 - 当前工作分支（常用）: `plan/change-aware-fusion-roadmap`
 - 远程仓库: `origin = https://github.com/Hemilt0n/stf.git`
 - 已同步的关键提交:
-  - `plan/change-aware-fusion-roadmap`: `22a545d`
-  - `master`: `5010d28`（与上面改动等价，cherry-pick）
+  - `plan/change-aware-fusion-roadmap`: `47cabb4`
+  - `master`: `5010d28`（早期接口统一改动的等价 cherry-pick）
 
 ## 2. 路径与运行约定
 
@@ -99,3 +99,42 @@ uv run stf train --config configs/flow/change_aware_toy_hf_grad_lap_rank.py
   - `stf/models/diffusion.py`
   - `stf/models/flow.py`
   - 对应 config 的模型构造参数
+
+## 9. 实验结果同步工作流（2026-03-12 新增）
+
+- 工作流说明文档: `docs/programm.md`
+- 目标:
+  - 以 `train.log` 为主生成小体积 epoch 摘要，方便跨会话复用。
+  - TensorBoard 仅作为可选兜底（日志缺字段或需 step 曲线时）。
+
+1. 用户先提供实验路径映射（实验名 -> 目录）
+   - 例如:
+     - `baseline -> runs/flow/change_aware_toy_xxx`
+     - `hf_grad -> runs/flow/change_aware_toy_hf_grad_xxx`
+
+2. 预处理 `train.log`（按 epoch 聚合）
+   - 脚本: `tools/summarize_train_log.py`
+   - 命令:
+     - `uv run python tools/summarize_train_log.py <run_dir>/logs/train.log`
+   - 产物（原目录）:
+     - `<run_dir>/logs/train.epoch.csv`
+     - `<run_dir>/logs/train.epoch.md`
+
+3. 可选：预处理 TensorBoard scalars（按 tag/step 汇总）
+   - 仅在以下场景启用:
+     - `train.log` 缺少关键标量
+     - 需要 step 级曲线对比
+   - 脚本: `tools/export_tb_scalars.py`
+   - 命令:
+     - `uv run python tools/export_tb_scalars.py <run_dir>/tensorboard`
+   - 产物（原目录）:
+     - `<run_dir>/tensorboard/tb.scalars.step.csv`
+     - `<run_dir>/tensorboard/tb.scalars.summary.csv`
+     - `<run_dir>/tensorboard/tb.scalars.summary.md`
+
+4. 图像结果同步约定（用户目视后回传）
+   - 每个实验至少提供:
+     - 样本/场景 ID
+     - 与 baseline 对比结论（更好/持平/更差）
+     - 是否缓解“复制 `fine_t1`”现象
+     - 结论置信度（高/中/低）
