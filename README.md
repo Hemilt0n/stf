@@ -62,6 +62,10 @@ uv run stf migrate-config \
 - `io`: `output_root/save_images/show_images/show_bands`
 - `resume_from`: 断点恢复路径
 
+遥感数据范围约定（必须）：
+- `RescaleToMinusOneOne(..., data_range=[0, 10000])`
+- 不要再使用 `data_range=[0, 100]`
+
 建议优先通过改配置完成实验切换，避免直接改引擎代码。
 
 ## 4. 开发时如何“改动最小、复用最强”

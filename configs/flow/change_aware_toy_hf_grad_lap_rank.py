@@ -30,7 +30,7 @@ train_dataset = SpatioTemporalFusionDataset(
     is_serialize_data=True,
     transform_func_list=[
         LoadData(key_list=KEYS),
-        RescaleToMinusOneOne(key_list=KEYS, data_range=[0, 100]),
+        RescaleToMinusOneOne(key_list=KEYS, data_range=[0, 10000]),
         Format(key_list=KEYS),
     ],
 )
@@ -60,7 +60,7 @@ val_dataset = SpatioTemporalFusionDataset(
     is_serialize_data=True,
     transform_func_list=[
         LoadData(key_list=KEYS),
-        RescaleToMinusOneOne(key_list=KEYS, data_range=[0, 100]),
+        RescaleToMinusOneOne(key_list=KEYS, data_range=[0, 10000]),
         Format(key_list=KEYS),
     ],
 )
