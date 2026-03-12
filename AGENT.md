@@ -16,6 +16,7 @@
 - 依赖管理: `uv` + `pyproject.toml`
 - 数据路径: `data -> /home/hang/repos/stf-tmp/data`（软链接）
 - 结果路径: `runs -> /mnt/d/hang/results`（软链接）
+- 遥感归一化约定（必须）: `RescaleToMinusOneOne(..., data_range=[0, 10000])`
 - `.gitignore` 已约束:
   - 忽略 `/data`、`/runs`
   - 忽略 `/configs/remote/*`，保留 `/configs/remote/.gitkeep`
