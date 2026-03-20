@@ -2,14 +2,14 @@
 
 本文件用于会话交接与快速恢复上下文。新一轮开发前，请先阅读此文件与 `README.md`。
 
-## 1. 当前状态（2026-03-11）
+## 1. 当前状态（2026-03-20）
 
 - 仓库路径: `/home/hang/repos/stf`
-- 当前工作分支（常用）: `plan/change-aware-fusion-roadmap`
+- 当前工作分支（常用）: `research/perf-24g-flow`
 - 远程仓库: `origin = https://github.com/Hemilt0n/stf.git`
 - 已同步的关键提交:
-  - `plan/change-aware-fusion-roadmap`: `22a545d`
-  - `master`: `5010d28`（与上面改动等价，cherry-pick）
+  - `research/perf-24g-flow`: `9280db8`
+  - `master`: `5eeadef`
 
 ## 2. 路径与运行约定
 
@@ -34,7 +34,28 @@
    - 文件: `stf/models/flow.py`
    - 不再使用旧式 `self.model(x_t, t, coarse1, coarse2)` 调用
 
-3. `master` 已同步上述接口统一改动，可在主干直接继续开发
+3. 遥感归一化默认值已统一:
+   - 约定: `RescaleToMinusOneOne(..., data_range=[0, 10000])`
+   - `master` 提交: `5eeadef`
+
+4. 新增 Flow 24G 性能优化研究分支（`research/perf-24g-flow`）
+   - 提交: `9280db8`
+   - 新增训练性能开关（`TrainConfig`）:
+     - `precision` (`fp16` / `bf16`)
+     - `enable_tf32`
+     - `deterministic`, `cudnn_benchmark`
+     - `non_blocking_transfer`
+     - `train_log_interval`
+     - `compile_model`, `compile_mode`, `compile_dynamic`
+     - `use_channels_last`
+   - 训练引擎能力更新:
+     - 迁移到 `torch.amp.autocast` + `torch.amp.GradScaler`
+     - 支持 `bf16` 路径（不启用 scaler）
+     - 可选 `torch.compile`、channels-last、non_blocking
+     - CUDA backend 配置可通过 config 控制（TF32 / deterministic / benchmark）
+   - 新增研究配置:
+     - `configs/flow/change_aware_perf_24g.py`
+     - `configs/flow/change_aware_perf_24g_compile.py`
 
 ## 4. 当前接口硬约束
 
@@ -59,6 +80,13 @@ uv run stf train --config configs/flow/change_aware_toy.py
 uv run stf train --config configs/stfdiff/change_aware_toy.py
 ```
 
+24G 性能研究配置（Flow）:
+
+```bash
+uv run stf train --config configs/flow/change_aware_perf_24g.py
+uv run stf train --config configs/flow/change_aware_perf_24g_compile.py
+```
+
 ## 6. 常见告警与说明
 
 - `libgomp: Invalid value for environment variable OMP_NUM_THREADS`
@@ -77,9 +105,19 @@ uv run stf train --config configs/stfdiff/change_aware_toy.py
 
 - 切分支并确认干净工作区:
   - `git status --short --branch`
+- 确认分支位置:
+  - `git branch --show-current`
 - 先跑 smoke:
   - `uv run pytest -q tests/smoke`
 - 若改了模型接口，必须同时检查:
   - `stf/models/diffusion.py`
   - `stf/models/flow.py`
   - 对应 config 的模型构造参数
+
+## 9. 本次更新记录
+
+- 更新日期: `2026-03-20 13:27:06 +0800`
+- 更新内容:
+  - 同步当前分支/提交信息
+  - 补充 24G 性能优化研究改动与配置入口
+  - 补充训练引擎性能开关能力说明
