@@ -8,7 +8,7 @@
 - 当前工作分支（常用）: `research/perf-24g-flow`
 - 远程仓库: `origin = https://github.com/Hemilt0n/stf.git`
 - 已同步的关键提交:
-  - `research/perf-24g-flow`: `9280db8`
+  - `research/perf-24g-flow`: `d0a2065`
   - `master`: `5eeadef`
 
 ## 2. 路径与运行约定
@@ -39,7 +39,9 @@
    - `master` 提交: `5eeadef`
 
 4. 新增 Flow 24G 性能优化研究分支（`research/perf-24g-flow`）
-   - 提交: `9280db8`
+   - 关键提交:
+     - `9280db8`（训练性能开关与研究配置）
+     - `d0a2065`（训练结束显存峰值汇总日志）
    - 新增训练性能开关（`TrainConfig`）:
      - `precision` (`fp16` / `bf16`)
      - `enable_tf32`
@@ -56,6 +58,8 @@
    - 新增研究配置:
      - `configs/flow/change_aware_perf_24g.py`
      - `configs/flow/change_aware_perf_24g_compile.py`
+   - 训练日志新增显存统计:
+     - `gpu memory summary: total / peak_allocated / peak_reserved / remaining`
 
 ## 4. 当前接口硬约束
 
@@ -116,8 +120,31 @@ uv run stf train --config configs/flow/change_aware_perf_24g_compile.py
 
 ## 9. 本次更新记录
 
-- 更新日期: `2026-03-20 13:27:06 +0800`
+- 更新日期: `2026-03-20 17:29:54 +0800`
 - 更新内容:
-  - 同步当前分支/提交信息
-  - 补充 24G 性能优化研究改动与配置入口
-  - 补充训练引擎性能开关能力说明
+  - 同步当前分支最新提交到 `d0a2065`
+  - 补充训练结束显存峰值统计能力
+  - 记录最新性能验证结果与下一步建议
+
+## 10. 最新验证结论（2026-03-20）
+
+- `perf_24g` 实测（32G 卡）:
+  - `gpu memory summary: total=32228.81 MiB, peak_allocated=21366.58 MiB (66.30%)`
+- 推断:
+  - 以当前模型配置看，24G 目标已达成（仍有一定余量用于后续改动）。
+- `perf_24g_compile`:
+  - 编译初始化耗时过长，当前阶段已暂停，不作为主路径。
+- 当前实验设置:
+  - `batch_size=32`
+  - 主干噪声预测器暂未启用高开销注意力模块。
+
+## 11. Attention 引入策略（建议）
+
+- 结论:
+  - 仍有必要继续执行“性能优化主线”，但从“compile 优先”切换为“attention 可控引入优先”。
+- 推荐顺序:
+  1. 先在注意力模块接入 PyTorch `scaled_dot_product_attention`（SDPA）实现与开关。
+  2. 在单卡24G目标下做 A/B: 无注意力 vs SDPA 注意力（含峰值显存与吞吐）。
+  3. 若 SDPA 仍不满足，再评估 FlashAttention 路线（作为增强选项而非首选依赖）。
+- 目标:
+  - 在引入注意力后继续满足 24G 可训练，并保持可接受吞吐/指标。
