@@ -252,10 +252,40 @@ class TrainEngine(BaseEngine):
         torch.save(data, checkpoint_path)
         self.txt_logger.info(f"Saved checkpoint: {checkpoint_path}")
 
+    @staticmethod
+    def _bytes_to_mib(num_bytes: int) -> float:
+        return float(num_bytes) / (1024.0 * 1024.0)
+
+    def _log_peak_memory_stats(self) -> None:
+        torch.cuda.synchronize(self.device)
+        device_idx = self.device.index if self.device.index is not None else torch.cuda.current_device()
+        total_mem_bytes = torch.cuda.get_device_properties(device_idx).total_memory
+        peak_alloc_bytes = torch.cuda.max_memory_allocated(self.device)
+        peak_reserved_bytes = torch.cuda.max_memory_reserved(self.device)
+        current_alloc_bytes = torch.cuda.memory_allocated(self.device)
+        current_reserved_bytes = torch.cuda.memory_reserved(self.device)
+
+        peak_alloc_ratio = (peak_alloc_bytes / total_mem_bytes) * 100.0
+        peak_reserved_ratio = (peak_reserved_bytes / total_mem_bytes) * 100.0
+        peak_remaining_by_reserved = max(total_mem_bytes - peak_reserved_bytes, 0)
+        peak_remaining_by_alloc = max(total_mem_bytes - peak_alloc_bytes, 0)
+
+        self.txt_logger.info(
+            "gpu memory summary: "
+            f"total={self._bytes_to_mib(total_mem_bytes):.2f} MiB, "
+            f"peak_allocated={self._bytes_to_mib(peak_alloc_bytes):.2f} MiB ({peak_alloc_ratio:.2f}%), "
+            f"peak_reserved={self._bytes_to_mib(peak_reserved_bytes):.2f} MiB ({peak_reserved_ratio:.2f}%), "
+            f"remaining_by_peak_reserved={self._bytes_to_mib(peak_remaining_by_reserved):.2f} MiB, "
+            f"remaining_by_peak_allocated={self._bytes_to_mib(peak_remaining_by_alloc):.2f} MiB, "
+            f"current_allocated={self._bytes_to_mib(current_alloc_bytes):.2f} MiB, "
+            f"current_reserved={self._bytes_to_mib(current_reserved_bytes):.2f} MiB"
+        )
+
     def run(self) -> Path:
         max_epochs = self.experiment.train.max_epochs
         val_interval = max(self.experiment.train.val_interval, 1)
         save_interval = max(self.experiment.train.save_interval, 1)
+        torch.cuda.reset_peak_memory_stats(self.device)
 
         for epoch in range(self.current_epoch, max_epochs):
             self.current_epoch = epoch
@@ -276,5 +306,6 @@ class TrainEngine(BaseEngine):
             if (epoch + 1) % save_interval == 0:
                 self._save_checkpoint()
 
+        self._log_peak_memory_stats()
         self.close()
         return self.run_dirs["root"]
