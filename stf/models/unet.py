@@ -213,11 +213,18 @@ class LinearAttention(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, heads=4, dim_head=32):
+    def __init__(self, dim, heads=4, dim_head=32, attn_backend="auto"):
         super().__init__()
         self.scale = dim_head**-0.5
         self.heads = heads
         hidden_dim = dim_head * heads
+        if attn_backend not in {"auto", "sdpa", "classic"}:
+            raise ValueError(
+                f"Unsupported attention backend: {attn_backend}. "
+                "Expected one of ['auto', 'sdpa', 'classic']"
+            )
+        self.attn_backend = attn_backend
+        self.supports_sdpa = hasattr(F, "scaled_dot_product_attention")
 
         self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
         self.to_out = nn.Conv2d(hidden_dim, dim, 1)
@@ -229,11 +236,32 @@ class Attention(nn.Module):
             lambda t: rearrange(t, 'b (h c) x y -> b h c (x y)', h=self.heads), qkv
         )
 
-        q = q * self.scale
+        use_sdpa = self.attn_backend == "sdpa" or (
+            self.attn_backend == "auto" and self.supports_sdpa
+        )
+        if use_sdpa:
+            if not self.supports_sdpa:
+                raise RuntimeError(
+                    "scaled_dot_product_attention is not available in this PyTorch build"
+                )
+            q = rearrange(q, "b h d n -> b h n d")
+            k = rearrange(k, "b h d n -> b h n d")
+            v = rearrange(v, "b h d n -> b h n d")
+            out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=0.0,
+                is_causal=False,
+            )
+            out = rearrange(out, "b h (x y) d -> b (h d) x y", x=h, y=w)
+            return self.to_out(out)
 
-        sim = einsum('b h d i, b h d j -> b h i j', q, k)
+        q = q * self.scale
+        sim = einsum("b h d i, b h d j -> b h i j", q, k)
         attn = sim.softmax(dim=-1)
-        out = einsum('b h i j, b h d j -> b h i d', attn, v)
+        out = einsum("b h i j, b h d j -> b h i d", attn, v)
 
         out = rearrange(out, 'b h (x y) d -> b (h d) x y', x=h, y=w)
         return self.to_out(out)
@@ -255,6 +283,7 @@ class Unet(nn.Module):
         learned_variance=False,
         learned_sinusoidal_cond=False,
         learned_sinusoidal_dim=16,
+        attention_backend="auto",
     ):
         super().__init__()
 
@@ -316,7 +345,9 @@ class Unet(nn.Module):
 
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
-        self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim)))
+        self.mid_attn = Residual(
+            PreNorm(mid_dim, Attention(mid_dim, attn_backend=attention_backend))
+        )
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
@@ -395,6 +426,7 @@ class PredTrajNet(nn.Module):
         learned_variance=False,
         learned_sinusoidal_cond=False,
         learned_sinusoidal_dim=16,
+        attention_backend="auto",
     ):
         super().__init__()
 
@@ -456,7 +488,9 @@ class PredTrajNet(nn.Module):
 
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
-        self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim)))
+        self.mid_attn = Residual(
+            PreNorm(mid_dim, Attention(mid_dim, attn_backend=attention_backend))
+        )
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
