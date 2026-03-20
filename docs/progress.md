@@ -1,6 +1,6 @@
 # STF 项目进展记录
 
-最后更新: 2026-03-12 11:21:47 +0800  
+最后更新: 2026-03-12 19:55:04 +0800  
 当前分支: `plan/change-aware-fusion-roadmap`
 
 ## 1. 文档用途
@@ -175,13 +175,48 @@
 - 结论:
   - 工作流可直接在实验目录产出紧凑摘要文件，满足后续跨实验对比输入要求。
 
+### 2026-03-12 19:55:04 +0800 | 两组真实实验日志聚合
+
+- 命令:
+  - `.venv/bin/python tools/summarize_train_log.py runs/flow/change_aware_cia_gaussianflow_20260311-110448/logs/train.log`
+  - `.venv/bin/python tools/summarize_train_log.py runs/flow/change_aware_hf_grad_cia_gaussianflow_20260312-083223/logs/train.log`
+- 结果:
+  - 两个实验目录均生成 `logs/train.epoch.csv` 与 `logs/train.epoch.md`。
+- 结论:
+  - 已具备基于 epoch 级摘要做横向定量对比的输入文件。
+
 ## 5. 用户实验回传记录（你跑完后我持续补）
 
 > 说明: 该区专门记录你回传给我的实验结果与结论，我会按同一格式持续追加。
 
 ### 当前状态
 
-- 暂无你回传的训练/评估实测结果。
+已跑实验（用户回传）:
+- `change_aware` -> `runs/flow/change_aware_cia_gaussianflow_20260311-110448`
+- `change_aware + hf_grad` -> `runs/flow/change_aware_hf_grad_cia_gaussianflow_20260312-083223`
+
+目视结论（用户）:
+- 与 baseline 无明显差别，仍然缺少细节、对变化的精细捕捉。
+
+量化汇总（助手基于 `train.log` 聚合，epoch=999）:
+
+| 指标 | baseline (`change_aware`) | `hf_grad` | 差值 (`hf_grad - baseline`) |
+| --- | --- | --- | --- |
+| val_loss | 0.0061 | 0.0059 | -0.0002 |
+| RMSE | 0.0345 | 0.0342 | -0.0003 |
+| MAE | 0.0152 | 0.0142 | -0.0010 |
+| PSNR | 30.3219 | 30.3864 | +0.0645 |
+| SSIM | 0.8942 | 0.8834 | -0.0108 |
+| ERGAS | 3.2920 | 3.1837 | -0.1083 |
+| CC | 0.7588 | 0.7431 | -0.0157 |
+| SAM | 0.0947 | 0.0748 | -0.0199 |
+| UIQI | 0.7458 | 0.7354 | -0.0104 |
+| TRP | -0.1533 | -0.1971 | -0.0438 |
+
+阶段判断（当前两组）:
+- `hf_grad` 在 `val_loss/RMSE/MAE/PSNR/ERGAS/SAM` 上有改善。
+- 但在 `SSIM/CC/UIQI/TRP` 上回退，且用户目视“无明显提升”。
+- 结论: 当前 `hf_grad` 默认参数尚不足以作为推荐默认配置，需要继续做 `grad+lap` / `grad+lap+rank` 与权重调参。
 
 ### 回传模板（建议）
 
@@ -205,13 +240,15 @@
   - 归一化口径统一为 `data_range=[0, 10000]`。
   - 新增实验结果预处理脚本（`train.log` epoch 聚合 + TensorBoard scalar 摘要）。
   - 新增可复用流程文档 `docs/programm.md` 并同步到 `AGENT.md`。
+  - 已完成两组真实实验对比（`change_aware` vs `change_aware + hf_grad`）并沉淀量化结果。
 - 仍待完成:
-  - 你回传完整实验结果后，做阶段性对比总结并固化默认推荐配置。
+  - 继续补齐 `hf_grad_lap`、`hf_grad_lap_rank` 两组，形成 4 组完整矩阵对比。
+  - 补充 high-change 分桶指标，验证是否缓解“复制 `fine_t1`”问题。
   - Diffusion 侧是否迁移同等 HF 约束，等待 Flow 结论。
 
 ## 7. 后续计划（短期）
 
 1. 跑完并汇总 4 组 Flow 高频约束实验（含 TRP 与 high-change 分桶）。
-2. 对比 baseline，确认是否达成“high-change 至少 5% 改善、overall 不明显回退”。
-3. 固化一版推荐默认配置（含权重与 mask 策略）。
-4. 若 Flow 结论稳定，将 HF 约束并行迁移到 Diffusion 侧。
+2. 以当前两组结果为基线，优先验证 `grad+lap` 与 `grad+lap+rank` 是否能修复 `SSIM/CC/UIQI/TRP` 回退。
+3. 对比 baseline，确认是否达成“high-change 至少 5% 改善、overall 不明显回退”。
+4. 固化一版推荐默认配置（含权重与 mask 策略）；若稳定再迁移到 Diffusion 侧。

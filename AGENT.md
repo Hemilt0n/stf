@@ -8,7 +8,7 @@
 - 当前工作分支（常用）: `plan/change-aware-fusion-roadmap`
 - 远程仓库: `origin = https://github.com/Hemilt0n/stf.git`
 - 已同步的关键提交:
-  - `plan/change-aware-fusion-roadmap`: `47cabb4`
+  - `plan/change-aware-fusion-roadmap`: `d72b2fe`
   - `master`: `5010d28`（早期接口统一改动的等价 cherry-pick）
 
 ## 2. 路径与运行约定
@@ -138,3 +138,19 @@ uv run stf train --config configs/flow/change_aware_toy_hf_grad_lap_rank.py
      - 与 baseline 对比结论（更好/持平/更差）
      - 是否缓解“复制 `fine_t1`”现象
      - 结论置信度（高/中/低）
+
+## 10. 最新实验快照（2026-03-12）
+
+- 已完成对比:
+  - `change_aware`:
+    - `runs/flow/change_aware_cia_gaussianflow_20260311-110448`
+  - `change_aware + hf_grad`:
+    - `runs/flow/change_aware_hf_grad_cia_gaussianflow_20260312-083223`
+- 用户目视结论:
+  - 两者无明显差别，仍缺少细节与变化精细捕捉。
+- `train.log` 聚合后（epoch=999）结论:
+  - `hf_grad` 在 `val_loss/RMSE/MAE/PSNR/ERGAS/SAM` 上有改善。
+  - 但 `SSIM/CC/UIQI/TRP` 回退，`TRP` 更负（`-0.1533 -> -0.1971`）。
+- 当前判断:
+  - `hf_grad` 现有默认参数不建议直接固化为默认配置。
+  - 下一步优先补齐 `hf_grad_lap` 与 `hf_grad_lap_rank`，并做 high-change 分桶评估。
