@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from ema_pytorch import EMA
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 from stf.compat import load_legacy_checkpoint
 from stf.engine.base import BaseEngine
@@ -23,10 +23,36 @@ class TrainEngine(BaseEngine):
         if self.train_loader is None:
             raise ValueError("train_dataloader is required for training")
 
+        self.use_mixed_precision = experiment.train.use_mixed_precision
+        self.precision = str(getattr(experiment.train, "precision", "fp16")).lower()
+        if self.precision not in {"fp16", "bf16"}:
+            raise ValueError(
+                f"Unsupported train.precision={self.precision}, expected one of ['fp16', 'bf16']"
+            )
+        self.amp_enabled = self.use_mixed_precision
+        self.amp_dtype = torch.float16 if self.precision == "fp16" else torch.bfloat16
+        self.non_blocking_transfer = bool(getattr(experiment.train, "non_blocking_transfer", False))
+        self.train_log_interval = max(1, int(getattr(experiment.train, "train_log_interval", 1)))
+        self.use_channels_last = bool(getattr(experiment.train, "use_channels_last", False))
+        self.compile_model = bool(getattr(experiment.train, "compile_model", False))
+        self.compile_mode = str(getattr(experiment.train, "compile_mode", "max-autotune"))
+        self.compile_dynamic = bool(getattr(experiment.train, "compile_dynamic", False))
+
+        if self.use_channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
+        if self.compile_model:
+            self.model = torch.compile(
+                self.model,
+                mode=self.compile_mode,
+                dynamic=self.compile_dynamic,
+            )
+
         self.optimizer = self._build_optimizer(experiment.optimizer)
         self.scheduler = self._build_scheduler(experiment.scheduler)
-        self.use_mixed_precision = experiment.train.use_mixed_precision
-        self.scaler = GradScaler(enabled=self.use_mixed_precision)
+        self.scaler = GradScaler(
+            device="cuda",
+            enabled=self.amp_enabled and self.precision == "fp16",
+        )
         self.use_ema = experiment.train.use_ema
         self.ema = EMA(self.model, beta=0.995, update_every=1).to(self.device) if self.use_ema else None
         self.current_epoch = 0
@@ -68,19 +94,27 @@ class TrainEngine(BaseEngine):
         self.txt_logger.info(f"Resumed training from checkpoint: {checkpoint_path}, epoch={self.current_epoch}")
 
     def _prepare_train_inputs(self, batch):
+        move = self._move_batch_tensor
         return [
-            batch["coarse_img_01"].to(self.device),
-            batch["coarse_img_02"].to(self.device),
-            batch["fine_img_01"].to(self.device),
-            batch["fine_img_02"].to(self.device),
+            move(batch["coarse_img_01"]),
+            move(batch["coarse_img_02"]),
+            move(batch["fine_img_01"]),
+            move(batch["fine_img_02"]),
         ]
 
     def _prepare_sample_inputs(self, batch):
+        move = self._move_batch_tensor
         return [
-            batch["coarse_img_01"].to(self.device),
-            batch["coarse_img_02"].to(self.device),
-            batch["fine_img_01"].to(self.device),
+            move(batch["coarse_img_01"]),
+            move(batch["coarse_img_02"]),
+            move(batch["fine_img_01"]),
         ]
+
+    def _move_batch_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        tensor = tensor.to(self.device, non_blocking=self.non_blocking_transfer)
+        if self.use_channels_last and tensor.ndim == 4:
+            tensor = tensor.contiguous(memory_format=torch.channels_last)
+        return tensor
 
     def _save_batch_images(self, outputs, batch):
         if not self.experiment.io.save_images and not self.experiment.io.show_images:
@@ -128,13 +162,19 @@ class TrainEngine(BaseEngine):
             inputs = self._prepare_train_inputs(batch)
 
             self.optimizer.zero_grad(set_to_none=True)
-            with autocast(dtype=torch.float16, enabled=self.use_mixed_precision):
+            with autocast("cuda", dtype=self.amp_dtype, enabled=self.amp_enabled):
                 loss = self.model(*inputs)
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
+            if self.scaler.is_enabled():
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+            else:
+                loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.experiment.train.grad_clip_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.scaler.is_enabled():
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
 
             if self.ema is not None:
                 self.ema.update()
@@ -144,9 +184,10 @@ class TrainEngine(BaseEngine):
             self.backend_logger.add_scalar("loss/train_step", loss_value, self.current_train_step)
             self.current_train_step += 1
 
-            self.txt_logger.info(
-                f"train epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}"
-            )
+            if iter_idx % self.train_log_interval == 0:
+                self.txt_logger.info(
+                    f"train epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}"
+                )
 
         epoch_loss = tracker.results["loss"]
         self.backend_logger.add_scalar("loss/train_epoch", epoch_loss, self.current_epoch)
@@ -163,9 +204,9 @@ class TrainEngine(BaseEngine):
         tracker = Tracker("loss", *[metric.__name__ for metric in self.metrics])
         for iter_idx, batch in enumerate(self.val_loader):
             sample_inputs = self._prepare_sample_inputs(batch)
-            gt = batch["fine_img_02"].to(self.device)
+            gt = self._move_batch_tensor(batch["fine_img_02"])
 
-            with torch.no_grad():
+            with torch.no_grad(), autocast("cuda", dtype=self.amp_dtype, enabled=self.amp_enabled):
                 outputs = sampler_model.sample(*sample_inputs)
                 loss = F.mse_loss(outputs, gt)
 
@@ -173,9 +214,9 @@ class TrainEngine(BaseEngine):
             tracker.update("loss", loss_value)
             self.backend_logger.add_scalar("loss/val_step", loss_value, self.current_val_step)
 
-            pred_for_metrics = (outputs + 1.0) / 2.0
-            gt_for_metrics = (gt + 1.0) / 2.0
-            ref_for_metrics = (batch["fine_img_01"].to(self.device) + 1.0) / 2.0
+            pred_for_metrics = (outputs.float() + 1.0) / 2.0
+            gt_for_metrics = (gt.float() + 1.0) / 2.0
+            ref_for_metrics = (self._move_batch_tensor(batch["fine_img_01"]).float() + 1.0) / 2.0
             for metric in self.metrics:
                 num_params = len(inspect.signature(metric.forward).parameters)
                 if num_params >= 3:

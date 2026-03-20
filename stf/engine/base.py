@@ -35,6 +35,7 @@ class BaseEngine:
             log_level="INFO",
         )
         self.backend_logger = BackendLogger(self.run_dirs["tensorboard"])
+        self._configure_cuda_backends()
 
         self.model = experiment.model.to(self.device)
         self.metrics = []
@@ -42,6 +43,29 @@ class BaseEngine:
             if hasattr(metric, "to"):
                 metric = metric.to(self.device)
             self.metrics.append(metric)
+
+    def _configure_cuda_backends(self) -> None:
+        train_cfg = self.experiment.train
+        enable_tf32 = bool(getattr(train_cfg, "enable_tf32", False))
+        deterministic = bool(getattr(train_cfg, "deterministic", True))
+        cudnn_benchmark = bool(getattr(train_cfg, "cudnn_benchmark", False))
+        if deterministic and cudnn_benchmark:
+            cudnn_benchmark = False
+            self.txt_logger.info(
+                "train.deterministic=True conflicts with cudnn_benchmark=True; forcing cudnn_benchmark=False"
+            )
+
+        torch.backends.cuda.matmul.allow_tf32 = enable_tf32
+        torch.backends.cudnn.allow_tf32 = enable_tf32
+        torch.backends.cudnn.deterministic = deterministic
+        torch.backends.cudnn.benchmark = cudnn_benchmark
+
+        self.txt_logger.info(
+            "CUDA backend settings: "
+            f"allow_tf32={enable_tf32}, "
+            f"deterministic={deterministic}, "
+            f"cudnn_benchmark={cudnn_benchmark}"
+        )
 
     def close(self) -> None:
         self.backend_logger.close()
