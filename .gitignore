@@ -1,8 +1,14 @@
+# Python virtualenv and caches
 .venv/
 .pytest_cache/
 __pycache__/
 *.pyc
+
+# Experiment artifacts and local datasets
 /runs
+/log
 /data
+
+# Machine-local config overrides (keep placeholder tracked)
 /configs/remote/*
 !/configs/remote/.gitkeep
