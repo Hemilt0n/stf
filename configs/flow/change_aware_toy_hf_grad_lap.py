@@ -39,7 +39,10 @@ train_loader = DataLoader(
     dataset=train_dataset,
     batch_size=2,
     sampler=EpochBasedSampler(dataset=train_dataset, is_shuffle=True, seed=42),
-    num_workers=0,
+    num_workers=4,
+    pin_memory=True,
+    persistent_workers=True,
+    prefetch_factor=4,
 )
 
 val_dataset = SpatioTemporalFusionDataset(
@@ -69,7 +72,10 @@ val_loader = DataLoader(
     dataset=val_dataset,
     batch_size=2,
     sampler=EpochBasedSampler(dataset=val_dataset, is_shuffle=False, seed=42),
-    num_workers=0,
+    num_workers=2,
+    pin_memory=True,
+    persistent_workers=True,
+    prefetch_factor=2,
 )
 
 model = FlowMatching(
@@ -104,6 +110,19 @@ EXPERIMENT = ExperimentConfig(
         TRP(change_aware=True),
     ],
     data=DataConfig(train_dataloader=train_loader, val_dataloader=val_loader),
-    train=TrainConfig(max_epochs=1, val_interval=1, save_interval=1),
+    train=TrainConfig(
+        max_epochs=1,
+        val_interval=1,
+        save_interval=1,
+        use_mixed_precision=True,
+        precision="bf16",
+        enable_tf32=True,
+        deterministic=False,
+        cudnn_benchmark=True,
+        non_blocking_transfer=True,
+        train_log_interval=20,
+        compile_model=False,
+        use_channels_last=True,
+    ),
     io=IOConfig(output_root="runs", save_images=False, show_images=False),
 )
