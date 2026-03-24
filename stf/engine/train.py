@@ -283,8 +283,10 @@ class TrainEngine(BaseEngine):
 
     def run(self) -> Path:
         max_epochs = self.experiment.train.max_epochs
-        val_interval = max(self.experiment.train.val_interval, 1)
-        save_interval = max(self.experiment.train.save_interval, 1)
+        val_interval = int(self.experiment.train.val_interval)
+        save_interval = int(self.experiment.train.save_interval)
+        enable_val = self.val_loader is not None and val_interval > 0
+        enable_save = save_interval > 0
         torch.cuda.reset_peak_memory_stats(self.device)
 
         for epoch in range(self.current_epoch, max_epochs):
@@ -292,7 +294,7 @@ class TrainEngine(BaseEngine):
             self._run_train_epoch()
 
             val_results = None
-            if self.val_loader is not None and (epoch + 1) % val_interval == 0:
+            if enable_val and (epoch + 1) % val_interval == 0:
                 val_results = self._run_val_epoch()
 
             if self.scheduler is not None:
@@ -303,7 +305,7 @@ class TrainEngine(BaseEngine):
                 else:
                     self.scheduler.step()
 
-            if (epoch + 1) % save_interval == 0:
+            if enable_save and (epoch + 1) % save_interval == 0:
                 self._save_checkpoint()
 
         self._log_peak_memory_stats()
