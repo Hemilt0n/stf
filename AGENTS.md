@@ -51,6 +51,14 @@
   - `batch_size=32`
   - 主训练路径（`pred_resnet` 的 `PredTrajNet`）目前仍未真正启用主干 attention 计算块。
 
+## 3.1 默认架构声明（2026-03-24）
+
+- Flow 默认训练包装器：`GaussianFlowMatching`（用于主线实验配置）。
+- `FlowMatching` 仅保留用于消融与调试，不作为默认主线。
+- 历史记录：
+  - `condition_dropout_p` 首次引入提交：`9aab002`（`2026-03-05 13:54:18 +0800`）
+  - 对应文档方案记录：`0ad3cfe`（`2026-03-04 20:28:46 +0800`）
+
 ## 4. 分支协作与同步规范
 
 - `AGENTS.md` 建议作为“主干基线文档”:

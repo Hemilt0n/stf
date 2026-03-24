@@ -7,7 +7,7 @@ from stf.config.types import DataConfig, ExperimentConfig, IOConfig, TrainConfig
 from stf.data import EpochBasedSampler, SpatioTemporalFusionDataset
 from stf.data.transforms import Format, LoadData, RescaleToMinusOneOne
 from stf.metrics import CC, ERGAS, MAE, PSNR, RMSE, SAM, SSIM, TRP, UIQI
-from stf.models import FlowMatching, PredTrajNet
+from stf.models import GaussianFlowMatching, PredTrajNet
 
 
 train_dataset = SpatioTemporalFusionDataset(
@@ -70,10 +70,11 @@ val_loader = DataLoader(
     num_workers=0,
 )
 
-model = FlowMatching(
+model = GaussianFlowMatching(
     model=PredTrajNet(dim=64, channels=3, out_dim=3, dim_mults=(1, 2, 4)),
     loss_type="l1",
     num_steps=20,
+    condition_dropout_p=0.0,
 )
 
 EXPERIMENT = ExperimentConfig(

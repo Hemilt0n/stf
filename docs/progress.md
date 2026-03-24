@@ -189,6 +189,20 @@
 - 下一步:
   - 你上机跑两份配置，确认前期输出是否摆脱贴近 `fine_img_01` 的现象，再决定是否合并主线。
 
+### 2026-03-24 17:45:00 +0800 | `dev/fine-t1-noise-warmup`（进行中）
+
+- 背景/目标:
+  - 统一默认 Flow 架构，避免 `FlowMatching` 在主线配置中继续导致过拟合风险。
+- 实现与代码改动:
+  - 将 `configs/flow/*.py` 的主训练包装器统一切换为 `GaussianFlowMatching`。
+  - change-aware 相关配置统一设置 `condition_dropout_p=0.1`；`minimal` 保持 `0.0`。
+  - 在 `docs/config.md`、`docs/开发手册.md`、`AGENTS.md` 声明默认架构与历史来源。
+- 历史核查（git）:
+  - `condition_dropout_p` 功能提交：`9aab002`（`2026-03-05 13:54:18 +0800`）
+  - 方案文档记录提交：`0ad3cfe`（`2026-03-04 20:28:46 +0800`）
+- 验证:
+  - 待本轮改动完成后统一 smoke。
+
 ## 4. 已有验证结果（当前可确认）
 
 ### 2026-03-12 11:01:48 +0800 | smoke
