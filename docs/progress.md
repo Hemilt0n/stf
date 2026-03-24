@@ -1,7 +1,7 @@
 # STF 项目进展记录
 
-最后更新: 2026-03-24 14:24:24 +0800  
-当前分支: `plan/change-aware-fusion-roadmap`
+最后更新: 2026-03-24 17:23:42 +0800  
+当前分支: `dev/fine-t1-noise-warmup`
 
 ## 1. 文档用途
 
@@ -171,6 +171,23 @@
   - 结果：`7 passed`
 - 结果:
   - `plan` 分支已对齐 `master` 关键优化，后续可直接进入 HF 矩阵实验阶段。
+
+### 2026-03-24 17:23:42 +0800 | `dev/fine-t1-noise-warmup`（进行中）
+
+- 背景/目标:
+  - 训练初期模型输出过快贴近 `fine_img_01`，需要强制打断“复制捷径”。
+- 实现与代码改动:
+  - 在 `TrainConfig` 增加 `fine_t1` 噪声 warmup 参数（epochs/steps/power/std）。
+  - 在 `TrainEngine` 训练输入阶段加入 `fine_img_01` 高斯噪声替代并按幂次曲线衰减至 0。
+  - 新增两份上机配置：
+    - `configs/flow/change_aware_toy_fine_t1_noise_warmup_300.py`
+    - `configs/flow/change_aware_toy_fine_t1_noise_warmup_500.py`
+  - 新增 smoke 测试覆盖调度与输入替换逻辑。
+- 验证:
+  - `uv run pytest -q tests/smoke/test_fine_t1_noise_warmup.py tests/smoke/test_config_loader.py tests/smoke/test_train_interval_semantics.py`
+  - 结果：`11 passed`
+- 下一步:
+  - 你上机跑两份配置，确认前期输出是否摆脱贴近 `fine_img_01` 的现象，再决定是否合并主线。
 
 ## 4. 已有验证结果（当前可确认）
 

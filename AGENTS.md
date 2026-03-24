@@ -10,7 +10,7 @@
 ## 1. 当前状态（2026-03-24）
 
 - 仓库路径: `/home/hang/repos/stf`
-- 当前分支: `master`
+- 当前分支: `dev/fine-t1-noise-warmup`（基于 `plan/change-aware-fusion-roadmap`）
 - 远程仓库: `origin = https://github.com/Hemilt0n/stf.git`
 - 已合入 `master` 的关键提交:
   - `677dbde`（合并 `research/perf-24g-flow`）
@@ -26,6 +26,8 @@
   - `train_log_interval`
   - `compile_model`, `compile_mode`, `compile_dynamic`
   - `use_channels_last`
+  - `fine_t1_noise_warmup_epochs`, `fine_t1_noise_warmup_steps`
+  - `fine_t1_noise_power`, `fine_t1_noise_std`
 - `TrainEngine` 已支持:
   - `torch.amp.autocast` + `torch.amp.GradScaler`
   - `bf16` 训练路径
@@ -101,4 +103,6 @@ uv run pytest -q tests/smoke
 ```bash
 uv run stf train --config configs/flow/change_aware_toy.py
 uv run stf train --config configs/flow/change_aware_perf_24g.py
+uv run stf train --config configs/flow/change_aware_toy_fine_t1_noise_warmup_300.py
+uv run stf train --config configs/flow/change_aware_toy_fine_t1_noise_warmup_500.py
 ```
