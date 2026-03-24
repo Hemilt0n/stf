@@ -19,7 +19,17 @@ class TrainConfig:
     save_interval: int = 1
     use_ema: bool = True
     use_mixed_precision: bool = True
+    precision: str = "fp16"
     grad_clip_norm: float = 1.0
+    enable_tf32: bool = False
+    deterministic: bool = True
+    cudnn_benchmark: bool = False
+    non_blocking_transfer: bool = False
+    train_log_interval: int = 1
+    compile_model: bool = False
+    compile_mode: str = "max-autotune"
+    compile_dynamic: bool = False
+    use_channels_last: bool = False
 
 
 @dataclass

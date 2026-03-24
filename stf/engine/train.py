@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from ema_pytorch import EMA
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 from stf.compat import load_legacy_checkpoint
 from stf.engine.base import BaseEngine
@@ -23,10 +23,36 @@ class TrainEngine(BaseEngine):
         if self.train_loader is None:
             raise ValueError("train_dataloader is required for training")
 
+        self.use_mixed_precision = experiment.train.use_mixed_precision
+        self.precision = str(getattr(experiment.train, "precision", "fp16")).lower()
+        if self.precision not in {"fp16", "bf16"}:
+            raise ValueError(
+                f"Unsupported train.precision={self.precision}, expected one of ['fp16', 'bf16']"
+            )
+        self.amp_enabled = self.use_mixed_precision
+        self.amp_dtype = torch.float16 if self.precision == "fp16" else torch.bfloat16
+        self.non_blocking_transfer = bool(getattr(experiment.train, "non_blocking_transfer", False))
+        self.train_log_interval = max(1, int(getattr(experiment.train, "train_log_interval", 1)))
+        self.use_channels_last = bool(getattr(experiment.train, "use_channels_last", False))
+        self.compile_model = bool(getattr(experiment.train, "compile_model", False))
+        self.compile_mode = str(getattr(experiment.train, "compile_mode", "max-autotune"))
+        self.compile_dynamic = bool(getattr(experiment.train, "compile_dynamic", False))
+
+        if self.use_channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
+        if self.compile_model:
+            self.model = torch.compile(
+                self.model,
+                mode=self.compile_mode,
+                dynamic=self.compile_dynamic,
+            )
+
         self.optimizer = self._build_optimizer(experiment.optimizer)
         self.scheduler = self._build_scheduler(experiment.scheduler)
-        self.use_mixed_precision = experiment.train.use_mixed_precision
-        self.scaler = GradScaler(enabled=self.use_mixed_precision)
+        self.scaler = GradScaler(
+            device="cuda",
+            enabled=self.amp_enabled and self.precision == "fp16",
+        )
         self.use_ema = experiment.train.use_ema
         self.ema = EMA(self.model, beta=0.995, update_every=1).to(self.device) if self.use_ema else None
         self.current_epoch = 0
@@ -68,19 +94,27 @@ class TrainEngine(BaseEngine):
         self.txt_logger.info(f"Resumed training from checkpoint: {checkpoint_path}, epoch={self.current_epoch}")
 
     def _prepare_train_inputs(self, batch):
+        move = self._move_batch_tensor
         return [
-            batch["coarse_img_01"].to(self.device),
-            batch["coarse_img_02"].to(self.device),
-            batch["fine_img_01"].to(self.device),
-            batch["fine_img_02"].to(self.device),
+            move(batch["coarse_img_01"]),
+            move(batch["coarse_img_02"]),
+            move(batch["fine_img_01"]),
+            move(batch["fine_img_02"]),
         ]
 
     def _prepare_sample_inputs(self, batch):
+        move = self._move_batch_tensor
         return [
-            batch["coarse_img_01"].to(self.device),
-            batch["coarse_img_02"].to(self.device),
-            batch["fine_img_01"].to(self.device),
+            move(batch["coarse_img_01"]),
+            move(batch["coarse_img_02"]),
+            move(batch["fine_img_01"]),
         ]
+
+    def _move_batch_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        tensor = tensor.to(self.device, non_blocking=self.non_blocking_transfer)
+        if self.use_channels_last and tensor.ndim == 4:
+            tensor = tensor.contiguous(memory_format=torch.channels_last)
+        return tensor
 
     def _save_batch_images(self, outputs, batch):
         if not self.experiment.io.save_images and not self.experiment.io.show_images:
@@ -128,13 +162,19 @@ class TrainEngine(BaseEngine):
             inputs = self._prepare_train_inputs(batch)
 
             self.optimizer.zero_grad(set_to_none=True)
-            with autocast(dtype=torch.float16, enabled=self.use_mixed_precision):
+            with autocast("cuda", dtype=self.amp_dtype, enabled=self.amp_enabled):
                 loss = self.model(*inputs)
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
+            if self.scaler.is_enabled():
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+            else:
+                loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.experiment.train.grad_clip_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.scaler.is_enabled():
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
 
             if self.ema is not None:
                 self.ema.update()
@@ -144,9 +184,10 @@ class TrainEngine(BaseEngine):
             self.backend_logger.add_scalar("loss/train_step", loss_value, self.current_train_step)
             self.current_train_step += 1
 
-            self.txt_logger.info(
-                f"train epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}"
-            )
+            if iter_idx % self.train_log_interval == 0:
+                self.txt_logger.info(
+                    f"train epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}"
+                )
 
         epoch_loss = tracker.results["loss"]
         self.backend_logger.add_scalar("loss/train_epoch", epoch_loss, self.current_epoch)
@@ -163,9 +204,9 @@ class TrainEngine(BaseEngine):
         tracker = Tracker("loss", *[metric.__name__ for metric in self.metrics])
         for iter_idx, batch in enumerate(self.val_loader):
             sample_inputs = self._prepare_sample_inputs(batch)
-            gt = batch["fine_img_02"].to(self.device)
+            gt = self._move_batch_tensor(batch["fine_img_02"])
 
-            with torch.no_grad():
+            with torch.no_grad(), autocast("cuda", dtype=self.amp_dtype, enabled=self.amp_enabled):
                 outputs = sampler_model.sample(*sample_inputs)
                 loss = F.mse_loss(outputs, gt)
 
@@ -173,9 +214,9 @@ class TrainEngine(BaseEngine):
             tracker.update("loss", loss_value)
             self.backend_logger.add_scalar("loss/val_step", loss_value, self.current_val_step)
 
-            pred_for_metrics = (outputs + 1.0) / 2.0
-            gt_for_metrics = (gt + 1.0) / 2.0
-            ref_for_metrics = (batch["fine_img_01"].to(self.device) + 1.0) / 2.0
+            pred_for_metrics = (outputs.float() + 1.0) / 2.0
+            gt_for_metrics = (gt.float() + 1.0) / 2.0
+            ref_for_metrics = (self._move_batch_tensor(batch["fine_img_01"]).float() + 1.0) / 2.0
             for metric in self.metrics:
                 num_params = len(inspect.signature(metric.forward).parameters)
                 if num_params >= 3:
@@ -211,10 +252,40 @@ class TrainEngine(BaseEngine):
         torch.save(data, checkpoint_path)
         self.txt_logger.info(f"Saved checkpoint: {checkpoint_path}")
 
+    @staticmethod
+    def _bytes_to_mib(num_bytes: int) -> float:
+        return float(num_bytes) / (1024.0 * 1024.0)
+
+    def _log_peak_memory_stats(self) -> None:
+        torch.cuda.synchronize(self.device)
+        device_idx = self.device.index if self.device.index is not None else torch.cuda.current_device()
+        total_mem_bytes = torch.cuda.get_device_properties(device_idx).total_memory
+        peak_alloc_bytes = torch.cuda.max_memory_allocated(self.device)
+        peak_reserved_bytes = torch.cuda.max_memory_reserved(self.device)
+        current_alloc_bytes = torch.cuda.memory_allocated(self.device)
+        current_reserved_bytes = torch.cuda.memory_reserved(self.device)
+
+        peak_alloc_ratio = (peak_alloc_bytes / total_mem_bytes) * 100.0
+        peak_reserved_ratio = (peak_reserved_bytes / total_mem_bytes) * 100.0
+        peak_remaining_by_reserved = max(total_mem_bytes - peak_reserved_bytes, 0)
+        peak_remaining_by_alloc = max(total_mem_bytes - peak_alloc_bytes, 0)
+
+        self.txt_logger.info(
+            "gpu memory summary: "
+            f"total={self._bytes_to_mib(total_mem_bytes):.2f} MiB, "
+            f"peak_allocated={self._bytes_to_mib(peak_alloc_bytes):.2f} MiB ({peak_alloc_ratio:.2f}%), "
+            f"peak_reserved={self._bytes_to_mib(peak_reserved_bytes):.2f} MiB ({peak_reserved_ratio:.2f}%), "
+            f"remaining_by_peak_reserved={self._bytes_to_mib(peak_remaining_by_reserved):.2f} MiB, "
+            f"remaining_by_peak_allocated={self._bytes_to_mib(peak_remaining_by_alloc):.2f} MiB, "
+            f"current_allocated={self._bytes_to_mib(current_alloc_bytes):.2f} MiB, "
+            f"current_reserved={self._bytes_to_mib(current_reserved_bytes):.2f} MiB"
+        )
+
     def run(self) -> Path:
         max_epochs = self.experiment.train.max_epochs
         val_interval = max(self.experiment.train.val_interval, 1)
         save_interval = max(self.experiment.train.save_interval, 1)
+        torch.cuda.reset_peak_memory_stats(self.device)
 
         for epoch in range(self.current_epoch, max_epochs):
             self.current_epoch = epoch
@@ -235,5 +306,6 @@ class TrainEngine(BaseEngine):
             if (epoch + 1) % save_interval == 0:
                 self._save_checkpoint()
 
+        self._log_peak_memory_stats()
         self.close()
         return self.run_dirs["root"]
