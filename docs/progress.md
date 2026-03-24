@@ -1,6 +1,6 @@
 # STF 项目进展记录
 
-最后更新: 2026-03-12 19:55:04 +0800  
+最后更新: 2026-03-24 14:24:24 +0800  
 当前分支: `plan/change-aware-fusion-roadmap`
 
 ## 1. 文档用途
@@ -130,12 +130,12 @@
   - 统一遥感数据归一化范围，修正默认值不一致风险。
 - 实现与代码改动:
   - 将相关配置统一为 `RescaleToMinusOneOne(..., data_range=[0, 10000])`。
-  - 同步更新 `README.md` 与 `AGENT.md` 约定。
+  - 同步更新 `README.md` 与 `AGENTS.md` 约定。
 - 主要文件:
   - `configs/flow/*.py`
   - `configs/stfdiff/*.py`
   - `README.md`
-  - `AGENT.md`
+  - `AGENTS.md`
 - 结果:
   - 归一化口径统一，降低实验结果偏差风险。
 
@@ -147,9 +147,30 @@
   - 新增 `tools/summarize_train_log.py`，将 `train.log` 聚合为 epoch 级摘要。
   - 新增 `tools/export_tb_scalars.py`，导出 TensorBoard scalar 的 tag/step 摘要。
   - 新增流程文档 [programm.md](/home/hang/repos/stf/docs/programm.md)。
-  - 更新 `AGENT.md`，加入“实验结果同步工作流”章节。
+  - 更新 `AGENTS.md`，加入“实验结果同步工作流”章节。
 - 结果:
   - 后续只需给实验路径映射，即可自动生成小文件并继续做跨实验对比。
+
+### 2026-03-24 14:12:00 +0800 | `cc32fcc`
+
+- 背景/目标:
+  - 将 `master` 的性能优化与工程规范同步到 `plan/change-aware-fusion-roadmap`，避免分支能力漂移。
+- 实现与代码改动:
+  - 执行 `git merge master`，解决冲突文件:
+    - `README.md`
+    - `stf/models/pred_resnet.py`
+    - `tests/smoke/test_config_loader.py`
+  - 同步引入：
+    - Flow 24G 性能配置与训练性能开关
+    - 训练结束显存峰值汇总日志
+    - SDPA attention backend 接口
+    - `AGENTS.md` 命名规范与 `.gitignore` 整理
+    - `setuptools>=68,<81` 及 lock 更新（TensorBoard 兼容）
+- 验证:
+  - `uv run pytest -q tests/smoke/test_config_loader.py tests/smoke/test_attention_sdpa.py`
+  - 结果：`7 passed`
+- 结果:
+  - `plan` 分支已对齐 `master` 关键优化，后续可直接进入 HF 矩阵实验阶段。
 
 ## 4. 已有验证结果（当前可确认）
 
@@ -230,7 +251,7 @@
 - 结论:
 - 下一步建议:
 
-## 6. 阶段总结（截至 2026-03-12）
+## 6. 阶段总结（截至 2026-03-24）
 
 - 已完成:
   - change-aware 基础改造已落地（flow + diffusion）。
@@ -239,8 +260,9 @@
   - Flow 家族接口（含 gaussian 变体）已统一。
   - 归一化口径统一为 `data_range=[0, 10000]`。
   - 新增实验结果预处理脚本（`train.log` epoch 聚合 + TensorBoard scalar 摘要）。
-  - 新增可复用流程文档 `docs/programm.md` 并同步到 `AGENT.md`。
+  - 新增可复用流程文档 `docs/programm.md` 并同步到 `AGENTS.md`。
   - 已完成两组真实实验对比（`change_aware` vs `change_aware + hf_grad`）并沉淀量化结果。
+  - `plan` 分支已合入 `master` 性能优化链路（`perf_24g`/SDPA/显存摘要/TensorBoard 兼容修复）。
 - 仍待完成:
   - 继续补齐 `hf_grad_lap`、`hf_grad_lap_rank` 两组，形成 4 组完整矩阵对比。
   - 补充 high-change 分桶指标，验证是否缓解“复制 `fine_t1`”问题。
