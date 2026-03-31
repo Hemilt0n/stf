@@ -53,3 +53,29 @@ def test_load_flow_fine_t1_noise_warmup_500_config():
     assert exp.task == "flow"
     assert exp.train.fine_t1_noise_warmup_epochs == 500
     assert exp.train.fine_t1_noise_power == 6.0
+
+
+def test_load_flow_fine_t1_noise_warmup_200_tail_config():
+    exp = load_experiment("configs/flow/change_aware_fine_t1_noise_warmup_200_tail.py")
+    assert exp.task == "flow"
+    assert isinstance(exp.model, GaussianFlowMatching)
+    assert exp.model.condition_dropout_p == 0.1
+    assert exp.model.change_loss_weight == 1.0
+    assert exp.model.coarse_consistency_weight == 0.2
+    assert exp.train.fine_t1_noise_warmup_epochs == 200
+    assert exp.train.fine_t1_noise_alpha_tail == 0.1
+
+
+def test_load_flow_fine_t1_baseline_matched_cia_config():
+    exp = load_experiment("configs/flow/change_aware_fine_t1_baseline_matched_cia.py")
+    assert exp.task == "flow"
+    assert isinstance(exp.model, GaussianFlowMatching)
+    assert exp.model.condition_dropout_p == 0.1
+    assert exp.model.change_loss_weight == 1.0
+    assert exp.model.coarse_consistency_weight == 0.2
+    assert exp.train.max_epochs == 500
+    assert exp.train.val_interval == 50
+    assert exp.train.save_interval == 50
+    assert exp.train.fine_t1_noise_warmup_epochs == 0
+    assert exp.train.fine_t1_noise_warmup_steps == 0
+    assert exp.train.fine_t1_noise_alpha_tail == 0.0

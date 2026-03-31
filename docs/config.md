@@ -33,3 +33,12 @@ Default values keep legacy behavior (`0.0` for new weights/dropout).
 
 - Default training wrapper for `task="flow"` is `GaussianFlowMatching`.
 - `FlowMatching` is retained for ablation/debug only and is not the recommended default path.
+
+## Train-side warmup knobs
+
+The following optional `TrainConfig` arguments control `fine_t1` anti-shortcut warmup:
+
+- `fine_t1_noise_warmup_epochs` / `fine_t1_noise_warmup_steps`: warmup length (`steps` takes priority)
+- `fine_t1_noise_power`: decay shape (larger means slower early decay)
+- `fine_t1_noise_std`: Gaussian noise scale
+- `fine_t1_noise_alpha_tail`: terminal alpha floor after warmup (`0.0` keeps old behavior; `>0` keeps a non-zero noise tail)

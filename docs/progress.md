@@ -1,6 +1,6 @@
 # STF 项目进展记录
 
-最后更新: 2026-03-24 17:23:42 +0800  
+最后更新: 2026-03-31 16:12:12 +0800  
 当前分支: `dev/fine-t1-noise-warmup`
 
 ## 1. 文档用途
@@ -203,6 +203,19 @@
 - 验证:
   - 待本轮改动完成后统一 smoke。
 
+### 2026-03-31 16:12:12 +0800 | `dev/fine-t1-noise-warmup`（进行中）
+
+- 背景/目标:
+  - `warmup_200` 仍出现偏参考图与幻觉地物，需要保留少量噪声尾值抑制后期捷径回流。
+- 实现与代码改动:
+  - 新增 `TrainConfig.fine_t1_noise_alpha_tail`（默认 `0.0`，保持向后兼容）。
+  - 训练调度改为从 `alpha=1` 衰减到 `alpha_tail`，warmup 后保持 `alpha_tail` 不再降为 0。
+  - 增加参数校验（`alpha_tail` 范围、与 warmup 配置联动）。
+  - 补充 smoke 测试覆盖 tail 调度与 warmup 后行为。
+- 验证:
+  - `uv run pytest -q tests/smoke/test_fine_t1_noise_warmup.py tests/smoke/test_config_loader.py`
+  - 结果：`11 passed`
+
 ## 4. 已有验证结果（当前可确认）
 
 ### 2026-03-12 11:01:48 +0800 | smoke
@@ -269,6 +282,33 @@
 - `hf_grad` 在 `val_loss/RMSE/MAE/PSNR/ERGAS/SAM` 上有改善。
 - 但在 `SSIM/CC/UIQI/TRP` 上回退，且用户目视“无明显提升”。
 - 结论: 当前 `hf_grad` 默认参数尚不足以作为推荐默认配置，需要继续做 `grad+lap` / `grad+lap+rank` 与权重调参。
+
+### 新增回传（2026-03-31）
+
+实验:
+- `warmup_200` -> `runs/flow/change_aware_fine_t1_noise_warmup_200_cia_20260326-230345`
+
+用户目视结论:
+- 噪声减小后清晰度恢复较快。
+- 细节仍偏向参考图像（`fine_t1`），且出现“本不存在地物块”的幻觉现象。
+
+量化对比（同窗口 500 epoch，`epoch=499`）:
+- warmup_200:
+  - `val_loss=0.0059`, `RMSE=0.0336`, `MAE=0.0133`, `PSNR=30.6356`
+  - `SSIM=0.9006`, `CC=0.7582`, `UIQI=0.7479`, `TRP=-0.1800`
+- baseline (`change_aware_cia_gaussianflow`, `epoch=499`):
+  - `val_loss=0.0062`, `RMSE=0.0352`, `MAE=0.0155`, `PSNR=30.0734`
+  - `SSIM=0.8962`, `CC=0.7485`, `UIQI=0.7351`, `TRP=-0.1792`
+
+趋势判断:
+- warmup_200 在前期（~`epoch<=200`）指标明显劣化，后期逐步追回并在多数指标上超过 baseline。
+- `TRP` 基本持平略差（`-0.1800` vs `-0.1792`），说明“复制倾向/伪变化”问题未被根治。
+- 与用户目视一致：该策略改善了训练路径与后期清晰度，但对语义真实性约束不足，仍可能诱发幻觉块。
+
+后续计划（基于本轮结果）:
+1. 继续保留 warmup 思路，但改为“非零尾值”调度（不让 `alpha` 直接降到 0）。
+2. 在 warmup 基础上叠加轻量一致性约束（优先 coarse/change-aware 约束），抑制幻觉地物。
+3. 开一组短跑 A/B（`warmup200` vs `warmup200+tail` vs `warmup200+tail+consistency`）先看前 300 epoch 视觉与 TRP。
 
 ### 回传模板（建议）
 

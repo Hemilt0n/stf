@@ -41,6 +41,7 @@ class TrainEngine(BaseEngine):
         self.fine_t1_noise_warmup_steps = int(getattr(experiment.train, "fine_t1_noise_warmup_steps", 0))
         self.fine_t1_noise_power = float(getattr(experiment.train, "fine_t1_noise_power", 4.0))
         self.fine_t1_noise_std = float(getattr(experiment.train, "fine_t1_noise_std", 1.0))
+        self.fine_t1_noise_alpha_tail = float(getattr(experiment.train, "fine_t1_noise_alpha_tail", 0.0))
         if self.fine_t1_noise_warmup_epochs < 0:
             raise ValueError("train.fine_t1_noise_warmup_epochs must be >= 0")
         if self.fine_t1_noise_warmup_steps < 0:
@@ -49,10 +50,17 @@ class TrainEngine(BaseEngine):
             raise ValueError("train.fine_t1_noise_power must be > 0")
         if self.fine_t1_noise_std < 0:
             raise ValueError("train.fine_t1_noise_std must be >= 0")
+        if not (0.0 <= self.fine_t1_noise_alpha_tail < 1.0):
+            raise ValueError("train.fine_t1_noise_alpha_tail must be in [0, 1)")
         if self.fine_t1_noise_warmup_steps > 0:
             self.fine_t1_noise_total_steps = self.fine_t1_noise_warmup_steps
         else:
             self.fine_t1_noise_total_steps = self.fine_t1_noise_warmup_epochs * len(self.train_loader)
+        if self.fine_t1_noise_alpha_tail > 0.0 and self.fine_t1_noise_total_steps <= 0:
+            raise ValueError(
+                "train.fine_t1_noise_alpha_tail > 0 requires "
+                "train.fine_t1_noise_warmup_epochs > 0 or train.fine_t1_noise_warmup_steps > 0"
+            )
         self._last_fine_t1_noise_alpha = 0.0
 
         if self.use_channels_last:
@@ -79,7 +87,8 @@ class TrainEngine(BaseEngine):
             self.txt_logger.info(
                 "Enabled fine_t1 noise warmup: "
                 f"total_steps={self.fine_t1_noise_total_steps}, "
-                f"power={self.fine_t1_noise_power:.2f}, std={self.fine_t1_noise_std:.2f}"
+                f"power={self.fine_t1_noise_power:.2f}, std={self.fine_t1_noise_std:.2f}, "
+                f"alpha_tail={self.fine_t1_noise_alpha_tail:.4f}"
             )
 
         checkpoint_path = resume_from or experiment.resume_from
@@ -117,11 +126,16 @@ class TrainEngine(BaseEngine):
         self.txt_logger.info(f"Resumed training from checkpoint: {checkpoint_path}, epoch={self.current_epoch}")
 
     @staticmethod
-    def _compute_fine_t1_noise_alpha(global_step: int, warmup_steps: int, power: float) -> float:
-        if warmup_steps <= 0 or global_step >= warmup_steps:
+    def _compute_fine_t1_noise_alpha(
+        global_step: int,
+        warmup_steps: int,
+        power: float,
+        alpha_tail: float = 0.0,
+    ) -> float:
+        if warmup_steps <= 0:
             return 0.0
-        progress = max(float(global_step), 0.0) / float(warmup_steps)
-        alpha = 1.0 - (progress**power)
+        progress = max(0.0, min(1.0, max(float(global_step), 0.0) / float(warmup_steps)))
+        alpha = alpha_tail + (1.0 - alpha_tail) * (1.0 - (progress**power))
         return max(0.0, min(1.0, alpha))
 
     def _get_fine_t1_noise_alpha(self) -> float:
@@ -129,6 +143,7 @@ class TrainEngine(BaseEngine):
             global_step=self.current_train_step,
             warmup_steps=self.fine_t1_noise_total_steps,
             power=self.fine_t1_noise_power,
+            alpha_tail=self.fine_t1_noise_alpha_tail,
         )
 
     def _prepare_train_inputs(self, batch):

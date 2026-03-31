@@ -34,6 +34,7 @@ class TrainConfig:
     fine_t1_noise_warmup_steps: int = 0
     fine_t1_noise_power: float = 4.0
     fine_t1_noise_std: float = 1.0
+    fine_t1_noise_alpha_tail: float = 0.0
 
 
 @dataclass

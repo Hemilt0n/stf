@@ -27,7 +27,7 @@
   - `compile_model`, `compile_mode`, `compile_dynamic`
   - `use_channels_last`
   - `fine_t1_noise_warmup_epochs`, `fine_t1_noise_warmup_steps`
-  - `fine_t1_noise_power`, `fine_t1_noise_std`
+  - `fine_t1_noise_power`, `fine_t1_noise_std`, `fine_t1_noise_alpha_tail`
 - `TrainEngine` 已支持:
   - `torch.amp.autocast` + `torch.amp.GradScaler`
   - `bf16` 训练路径
