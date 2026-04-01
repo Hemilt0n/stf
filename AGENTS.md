@@ -49,6 +49,31 @@
   - `batch_size=32`
   - 主训练路径（`pred_resnet` 的 `PredTrajNet`）目前仍未真正启用主干 attention 计算块。
 
+## 3.1 默认架构声明（2026-03-24）
+
+- Flow 默认训练包装器：`GaussianFlowMatching`（用于主线实验配置）。
+- `FlowMatching` 仅保留用于消融与调试，不作为默认主线。
+- 历史记录：
+  - `condition_dropout_p` 首次引入提交：`9aab002`（`2026-03-05 13:54:18 +0800`）
+  - 对应文档方案记录：`0ad3cfe`（`2026-03-04 20:28:46 +0800`）
+
+## 3.2 `fine_t1` warmup 严格配对复核（2026-04-01）
+
+- 对比实验:
+  - baseline（严格配对）: `runs/flow/change_aware_fine_t1_baseline_matched_cia_20260331-173119`
+  - warmup: `runs/flow/change_aware_fine_t1_noise_warmup_200_cia_20260326-230345`
+- 对齐口径:
+  - 两边均使用 `tools/summarize_train_log.py` 按 epoch 聚合。
+  - 仅比较共同验证点（`49,99,...,499`），除 warmup 参数外其余保持一致。
+- `epoch=499` 结论:
+  - baseline 在 `val_loss/RMSE/PSNR/SSIM/CC/ERGAS/UIQI` 略优。
+  - warmup 在 `MAE/SAM/TRP` 略优。
+- `warmup_200` vs `warmup_200_tail`（`runs/flow/change_aware_fine_t1_noise_warmup_200_tail_20260331-225043`）:
+  - 在共同验证点 `49,99,...,499` 下，`warmup_200_tail` 仅 `TRP` 更优，其余主指标整体回退。
+  - 当前 `fine_t1_noise_alpha_tail=0.1` 不作为默认推荐参数。
+- 总结:
+  - warmup 参数对训练动力学有效（前期抑制捷径、后期追回），但本轮严格配对下未形成最终整体指标优势。
+  - 后续优先验证“更弱 tail（更小 alpha）+ consistency”组合，而非直接复用 `alpha_tail=0.1`。
 ## 4. 分支协作与同步规范
 
 - `AGENTS.md` 建议作为“主干基线文档”:
