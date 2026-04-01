@@ -310,6 +310,43 @@
 2. 在 warmup 基础上叠加轻量一致性约束（优先 coarse/change-aware 约束），抑制幻觉地物。
 3. 开一组短跑 A/B（`warmup200` vs `warmup200+tail` vs `warmup200+tail+consistency`）先看前 300 epoch 视觉与 TRP。
 
+### 新增回传（2026-04-01 09:40 +0800）| 严格配对 baseline 复核
+
+实验:
+- baseline（严格配对）: `runs/flow/change_aware_fine_t1_baseline_matched_cia_20260331-173119`
+- warmup: `runs/flow/change_aware_fine_t1_noise_warmup_200_cia_20260326-230345`
+
+对齐方式:
+- 两边均按 `tools/summarize_train_log.py` 聚合为 `train.epoch.csv`。
+- 仅比较共同验证点（`epoch=49,99,...,499`），控制变量一致，仅差异为 `fine_t1` 噪声 warmup/tail 相关参数。
+
+量化结论（`epoch=499`）:
+- baseline:
+  - `val_loss=0.0058`, `RMSE=0.0334`, `MAE=0.0134`, `PSNR=30.7065`
+  - `SSIM=0.9010`, `CC=0.7614`, `ERGAS=3.1436`, `SAM=0.0642`, `UIQI=0.7514`, `TRP=-0.1808`
+- warmup_200:
+  - `val_loss=0.0059`, `RMSE=0.0336`, `MAE=0.0133`, `PSNR=30.6356`
+  - `SSIM=0.9006`, `CC=0.7582`, `ERGAS=3.1486`, `SAM=0.0638`, `UIQI=0.7479`, `TRP=-0.1800`
+
+趋势判断:
+- warmup_200 在前 200 epoch 明显更慢（前期 `val_loss/RMSE/PSNR` 全部落后），后期逐步追回。
+- 到末轮多数指标 baseline 略优（`val_loss/RMSE/PSNR/SSIM/CC/ERGAS/UIQI`），warmup 在 `MAE/SAM/TRP` 略优。
+- 说明 warmup 参数对学习动力学“有效”（显著改变前中期收敛路径），但在这组严格配对实验中未转化为整体最终指标优势。
+
+阶段结论（本轮复核）:
+- “warmup 有效”应定义为: 能抑制早期捷径依赖并改变收敛轨迹，而非保证最终 scalar 全面提升。
+- 若目标是最终指标超越 baseline，下一步应重点验证 `warmup + tail + 一致性约束` 的组合，而非单独 warmup。
+
+补充对比（2026-04-01 10:05 +0800）| `warmup_200` vs `warmup_200_tail`:
+- tail 实验: `runs/flow/change_aware_fine_t1_noise_warmup_200_tail_20260331-225043`
+- 对齐口径: 两边都在 `epoch=49,99,...,499` 做验证点对齐比较。
+- `epoch=499`:
+  - `warmup_200` 更优: `val_loss/RMSE/MAE/PSNR/SSIM/ERGAS/CC/SAM/UIQI`
+  - `warmup_200_tail` 仅 `TRP` 更优（`-0.1668` vs `-0.1800`）
+- 结论:
+  - 当前 `fine_t1_noise_alpha_tail=0.1` 对主质量指标是负收益，不能作为默认推荐。
+  - tail 机制仍有价值（TRP 改善），但需要下调尾值强度或配合一致性约束后再评估。
+
 ### 回传模板（建议）
 
 - 时间:
