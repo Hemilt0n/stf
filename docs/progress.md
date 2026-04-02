@@ -347,6 +347,23 @@
   - 当前 `fine_t1_noise_alpha_tail=0.1` 对主质量指标是负收益，不能作为默认推荐。
   - tail 机制仍有价值（TRP 改善），但需要下调尾值强度或配合一致性约束后再评估。
 
+### 2026-04-02 10:45:00 +0800 | val step 抖动排查与可观测性增强
+
+- 背景/目标:
+  - 用户反馈同一 `val_epoch` 内不同 `iter` 指标波动明显，需要判断是否正常并可定位到具体样本批次。
+- 实现与代码改动:
+  - `TrainConfig` 新增可选调试项:
+    - `val_step_log_keys`（按 iter 记录 `sample_idx/key`）
+    - `val_step_log_max_keys`（日志 key 预览上限）
+    - `val_step_save_csv`（将每个 val iter 的 loss/metrics/key 落盘到 `runs/.../debug`）
+  - `TrainEngine._run_val_epoch` 接入上述开关，按 epoch 生成:
+    - `debug/val_step_epoch_XXXX.csv`
+  - 新增离线脚本:
+    - `tools/dump_sampler_layout.py`
+    - 可基于 config + sampler + epoch 导出批次相对位置到 `runs/debug/*.csv`（无需加载图像张量）。
+- 结果:
+  - 可直接将异常波动的 `val_step` 映射到具体批次位置与样本 key，区分“难样本分布”与“训练数值异常”。
+
 ### 回传模板（建议）
 
 - 时间:

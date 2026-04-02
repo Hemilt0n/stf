@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import inspect
 from pathlib import Path
 
@@ -37,6 +38,9 @@ class TrainEngine(BaseEngine):
         self.compile_model = bool(getattr(experiment.train, "compile_model", False))
         self.compile_mode = str(getattr(experiment.train, "compile_mode", "max-autotune"))
         self.compile_dynamic = bool(getattr(experiment.train, "compile_dynamic", False))
+        self.val_step_log_keys = bool(getattr(experiment.train, "val_step_log_keys", False))
+        self.val_step_log_max_keys = max(1, int(getattr(experiment.train, "val_step_log_max_keys", 8)))
+        self.val_step_save_csv = bool(getattr(experiment.train, "val_step_save_csv", False))
 
         if self.use_channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)
@@ -152,6 +156,30 @@ class TrainEngine(BaseEngine):
                     show_bands=self.experiment.io.show_bands,
                 )
 
+    @staticmethod
+    def _batch_field_to_list(value) -> list:
+        if value is None:
+            return []
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().flatten().tolist()
+        if isinstance(value, (list, tuple)):
+            return [item.item() if isinstance(item, torch.Tensor) else item for item in value]
+        return [value]
+
+    def _debug_batch_keys(self, batch, max_items: int | None = None) -> tuple[str, str]:
+        sample_idxs = [str(v) for v in self._batch_field_to_list(batch.get("sample_idx"))]
+        keys = [str(v) for v in self._batch_field_to_list(batch.get("key"))]
+
+        if max_items is not None and len(sample_idxs) > max_items:
+            sample_idx_preview = sample_idxs[:max_items] + ["..."]
+        else:
+            sample_idx_preview = sample_idxs
+        if max_items is not None and len(keys) > max_items:
+            key_preview = keys[:max_items] + ["..."]
+        else:
+            key_preview = keys
+        return ",".join(sample_idx_preview), ",".join(key_preview)
+
     def _run_train_epoch(self):
         self.model.train()
         if hasattr(self.train_loader, "sampler") and hasattr(self.train_loader.sampler, "set_epoch"):
@@ -202,6 +230,20 @@ class TrainEngine(BaseEngine):
         sampler_model.eval()
 
         tracker = Tracker("loss", *[metric.__name__ for metric in self.metrics])
+        metric_names = [metric.__name__ for metric in self.metrics]
+        debug_writer = None
+        debug_file = None
+        debug_path = None
+        if self.val_step_save_csv:
+            debug_dir = self.run_dirs["root"] / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            debug_path = debug_dir / f"val_step_epoch_{self.current_epoch:04d}.csv"
+            debug_file = debug_path.open("w", newline="")
+            debug_writer = csv.DictWriter(
+                debug_file,
+                fieldnames=["epoch", "iter", "val_step", "loss", "sample_idx", "key", *metric_names],
+            )
+            debug_writer.writeheader()
         for iter_idx, batch in enumerate(self.val_loader):
             sample_inputs = self._prepare_sample_inputs(batch)
             gt = self._move_batch_tensor(batch["fine_img_02"])
@@ -217,6 +259,7 @@ class TrainEngine(BaseEngine):
             pred_for_metrics = (outputs.float() + 1.0) / 2.0
             gt_for_metrics = (gt.float() + 1.0) / 2.0
             ref_for_metrics = (self._move_batch_tensor(batch["fine_img_01"]).float() + 1.0) / 2.0
+            metric_values = {}
             for metric in self.metrics:
                 num_params = len(inspect.signature(metric.forward).parameters)
                 if num_params >= 3:
@@ -226,11 +269,39 @@ class TrainEngine(BaseEngine):
                 else:
                     value = float(metric(gt_for_metrics, pred_for_metrics).item())
                 tracker.update(metric.__name__, value)
+                metric_values[metric.__name__] = value
                 self.backend_logger.add_scalar(f"metric/val_step/{metric.__name__}", value, self.current_val_step)
 
             self._save_batch_images(outputs, batch)
+            sample_idx_full, key_full = self._debug_batch_keys(batch, max_items=None)
+            if debug_writer is not None:
+                debug_writer.writerow(
+                    {
+                        "epoch": self.current_epoch,
+                        "iter": iter_idx,
+                        "val_step": self.current_val_step,
+                        "loss": f"{loss_value:.6e}",
+                        "sample_idx": sample_idx_full,
+                        "key": key_full,
+                        **{name: f"{metric_values[name]:.6e}" for name in metric_names},
+                    }
+                )
+            sample_idx_preview, key_preview = self._debug_batch_keys(
+                batch, max_items=self.val_step_log_max_keys
+            )
             self.current_val_step += 1
-            self.txt_logger.info(f"val epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}")
+            if self.val_step_log_keys:
+                self.txt_logger.info(
+                    "val "
+                    f"epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e} "
+                    f"sample_idx=[{sample_idx_preview}] key=[{key_preview}]"
+                )
+            else:
+                self.txt_logger.info(f"val epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}")
+
+        if debug_file is not None:
+            debug_file.close()
+            self.txt_logger.info(f"Saved val-step debug csv: {debug_path}")
 
         for key, value in tracker.results.items():
             self.backend_logger.add_scalar(f"metric/val_epoch/{key}", value, self.current_epoch)

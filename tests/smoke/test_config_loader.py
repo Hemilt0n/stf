@@ -6,6 +6,8 @@ def test_load_flow_config():
     assert exp.task == "flow"
     assert exp.model is not None
     assert exp.data.train_dataloader is not None
+    assert exp.train.val_step_log_keys is False
+    assert exp.train.val_step_save_csv is False
 
 
 def test_load_stfdiff_config():
@@ -21,6 +23,7 @@ def test_load_flow_perf_config():
     assert exp.train.precision == "bf16"
     assert exp.train.enable_tf32 is True
     assert exp.train.compile_model is False
+    assert exp.train.val_step_log_max_keys == 8
 
 
 def test_load_flow_perf_compile_config():

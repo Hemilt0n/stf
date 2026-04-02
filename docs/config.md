@@ -18,6 +18,33 @@ Key sections:
 - `io`: output/log/image behavior
 - `resume_from`: optional checkpoint path
 
+## Train Debug Knobs
+
+Validation step diagnostics (optional):
+
+- `train.val_step_log_keys`:
+  - `False` by default.
+  - When `True`, `val` log lines include `sample_idx` and `key` preview for each iter.
+- `train.val_step_log_max_keys`:
+  - `8` by default.
+  - Limits how many keys are printed per val iter line.
+- `train.val_step_save_csv`:
+  - `False` by default.
+  - When `True`, dumps per-iter validation debug CSV to
+    `runs/<task>/<exp>_<timestamp>/debug/val_step_epoch_XXXX.csv`.
+
+Sampler layout offline dump:
+
+```bash
+uv run python tools/dump_sampler_layout.py \
+  --config configs/flow/change_aware_perf_24g.py \
+  --split val \
+  --epoch 0
+```
+
+Default output:
+- `runs/debug/<exp_name>_<split>_sampler_epoch<epoch>_<timestamp>.csv`
+
 ## Change-aware knobs (model-level)
 
 The following optional arguments are now supported in core models:

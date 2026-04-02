@@ -26,6 +26,7 @@
   - `train_log_interval`
   - `compile_model`, `compile_mode`, `compile_dynamic`
   - `use_channels_last`
+  - `val_step_log_keys`, `val_step_log_max_keys`, `val_step_save_csv`（验证步调试开关）
 - `TrainEngine` 已支持:
   - `torch.amp.autocast` + `torch.amp.GradScaler`
   - `bf16` 训练路径
@@ -36,6 +37,9 @@
 - SDPA 接口已接入并保留后端开关:
   - `attention_backend in {'auto','sdpa','classic'}`
   - 代码位于 `stf/models/unet.py` 与 `stf/models/pred_resnet.py`
+- 新增离线 sampler 布局导出脚本:
+  - `tools/dump_sampler_layout.py`
+  - 输出 `runs/debug/*.csv`，用于定位固定顺序 val 批次中的难样本位置。
 
 ## 3. 最新实验结论（同步）
 

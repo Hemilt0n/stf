@@ -30,6 +30,9 @@ class TrainConfig:
     compile_mode: str = "max-autotune"
     compile_dynamic: bool = False
     use_channels_last: bool = False
+    val_step_log_keys: bool = False
+    val_step_log_max_keys: int = 8
+    val_step_save_csv: bool = False
 
 
 @dataclass
