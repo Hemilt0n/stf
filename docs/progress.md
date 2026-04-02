@@ -401,6 +401,28 @@
 - 验证:
   - `test_config_loader` 覆盖默认配置与自定义 `task` 场景。
 
+### 2026-04-02 12:25:00 +0800 | 新增全量模板配置（含性能/debug分类）
+
+- 背景/目标:
+  - 避免新分支/新实验遗漏新增配置项，提供统一模板作为复制起点。
+- 实现与代码改动:
+  - 新增 `configs/flow/template_all_options.py`：
+    - 覆盖当前常用 `ExperimentConfig` / `TrainConfig` 选项。
+    - 按“基础 / 性能 / debug”分组注释。
+    - 性能相关与 debug 相关默认关闭。
+  - 补充 `test_config_loader` 冒烟，确保模板可加载且默认开关语义正确。
+  - 在 `docs/config.md`、`AGENTS.md` 补充模板入口说明。
+- 验证:
+  - `tests/smoke/test_config_loader.py` 覆盖模板配置加载。
+
+补充（2026-04-02 12:38:00 +0800）| 模板默认值修正:
+- 根据需求，将模板中的性能项默认值改为“开启”，并对齐 `configs/flow/change_aware_perf_24g.py`：
+  - dataloader: `num_workers/pin_memory/persistent_workers/prefetch_factor`
+  - train: `use_mixed_precision=True`, `precision="bf16"`, `enable_tf32=True`,
+    `deterministic=False`, `cudnn_benchmark=True`, `non_blocking_transfer=True`,
+    `use_channels_last=True`
+- debug 项默认保持关闭。
+
 ### 回传模板（建议）
 
 - 时间:

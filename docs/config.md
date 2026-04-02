@@ -18,6 +18,10 @@ Key sections:
 - `io`: output/log/image behavior
 - `resume_from`: optional checkpoint path
 
+Template config (full options, perf/debug categorized):
+- `configs/flow/template_all_options.py`
+- Use this as the default starting point for new branches/experiments.
+
 ## Train Debug Knobs
 
 Validation step diagnostics (optional):

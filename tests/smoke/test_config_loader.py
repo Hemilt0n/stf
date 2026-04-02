@@ -33,6 +33,20 @@ def test_load_flow_perf_compile_config():
     assert exp.train.compile_dynamic is True
 
 
+def test_load_flow_template_all_options_config():
+    exp = load_experiment("configs/flow/template_all_options.py")
+    assert exp.task == "flow"
+    assert exp.train.use_mixed_precision is True
+    assert exp.train.precision == "bf16"
+    assert exp.train.enable_tf32 is True
+    assert exp.train.cudnn_benchmark is True
+    assert exp.train.non_blocking_transfer is True
+    assert exp.train.use_channels_last is True
+    assert exp.train.compile_model is False
+    assert exp.train.val_step_log_keys is False
+    assert exp.train.val_step_save_csv is False
+
+
 def test_load_config_with_custom_task(tmp_path):
     cfg_path = tmp_path / "custom_task_cfg.py"
     cfg_path.write_text(

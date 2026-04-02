@@ -163,4 +163,8 @@ uv run pytest -q tests/smoke
 ```bash
 uv run stf train --config configs/flow/change_aware_toy.py
 uv run stf train --config configs/flow/change_aware_perf_24g.py
+uv run stf train --config configs/flow/template_all_options.py
 ```
+
+模板约定:
+- 新开分支时优先复制 `configs/flow/template_all_options.py` 起步，避免遗漏新增配置项。
