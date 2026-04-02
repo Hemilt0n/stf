@@ -38,9 +38,34 @@ class TrainEngine(BaseEngine):
         self.compile_model = bool(getattr(experiment.train, "compile_model", False))
         self.compile_mode = str(getattr(experiment.train, "compile_mode", "max-autotune"))
         self.compile_dynamic = bool(getattr(experiment.train, "compile_dynamic", False))
+        self.fine_t1_noise_warmup_epochs = int(getattr(experiment.train, "fine_t1_noise_warmup_epochs", 0))
+        self.fine_t1_noise_warmup_steps = int(getattr(experiment.train, "fine_t1_noise_warmup_steps", 0))
+        self.fine_t1_noise_power = float(getattr(experiment.train, "fine_t1_noise_power", 4.0))
+        self.fine_t1_noise_std = float(getattr(experiment.train, "fine_t1_noise_std", 1.0))
+        self.fine_t1_noise_alpha_tail = float(getattr(experiment.train, "fine_t1_noise_alpha_tail", 0.0))
         self.val_step_log_keys = bool(getattr(experiment.train, "val_step_log_keys", False))
         self.val_step_log_max_keys = max(1, int(getattr(experiment.train, "val_step_log_max_keys", 8)))
         self.val_step_save_csv = bool(getattr(experiment.train, "val_step_save_csv", False))
+        if self.fine_t1_noise_warmup_epochs < 0:
+            raise ValueError("train.fine_t1_noise_warmup_epochs must be >= 0")
+        if self.fine_t1_noise_warmup_steps < 0:
+            raise ValueError("train.fine_t1_noise_warmup_steps must be >= 0")
+        if self.fine_t1_noise_power <= 0:
+            raise ValueError("train.fine_t1_noise_power must be > 0")
+        if self.fine_t1_noise_std < 0:
+            raise ValueError("train.fine_t1_noise_std must be >= 0")
+        if not (0.0 <= self.fine_t1_noise_alpha_tail < 1.0):
+            raise ValueError("train.fine_t1_noise_alpha_tail must be in [0, 1)")
+        if self.fine_t1_noise_warmup_steps > 0:
+            self.fine_t1_noise_total_steps = self.fine_t1_noise_warmup_steps
+        else:
+            self.fine_t1_noise_total_steps = self.fine_t1_noise_warmup_epochs * len(self.train_loader)
+        if self.fine_t1_noise_alpha_tail > 0.0 and self.fine_t1_noise_total_steps <= 0:
+            raise ValueError(
+                "train.fine_t1_noise_alpha_tail > 0 requires "
+                "train.fine_t1_noise_warmup_epochs > 0 or train.fine_t1_noise_warmup_steps > 0"
+            )
+        self._last_fine_t1_noise_alpha = 0.0
 
         if self.use_channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)
@@ -62,6 +87,13 @@ class TrainEngine(BaseEngine):
         self.current_epoch = 0
         self.current_train_step = 0
         self.current_val_step = 0
+        if self.fine_t1_noise_total_steps > 0:
+            self.txt_logger.info(
+                "Enabled fine_t1 noise warmup: "
+                f"total_steps={self.fine_t1_noise_total_steps}, "
+                f"power={self.fine_t1_noise_power:.2f}, std={self.fine_t1_noise_std:.2f}, "
+                f"alpha_tail={self.fine_t1_noise_alpha_tail:.4f}"
+            )
 
         checkpoint_path = resume_from or experiment.resume_from
         if checkpoint_path:
@@ -99,12 +131,50 @@ class TrainEngine(BaseEngine):
 
     def _prepare_train_inputs(self, batch):
         move = self._move_batch_tensor
+        coarse_img_01 = move(batch["coarse_img_01"])
+        coarse_img_02 = move(batch["coarse_img_02"])
+        fine_img_01 = move(batch["fine_img_01"])
+        fine_img_02 = move(batch["fine_img_02"])
+
+        fine_t1_noise_alpha = self._get_fine_t1_noise_alpha()
+        if fine_t1_noise_alpha > 0:
+            noise = torch.randn_like(fine_img_01) * self.fine_t1_noise_std
+            fine_img_01 = fine_img_01 * (1.0 - fine_t1_noise_alpha) + noise * fine_t1_noise_alpha
+        self._last_fine_t1_noise_alpha = fine_t1_noise_alpha
+        if hasattr(self, "backend_logger") and self.backend_logger is not None:
+            self.backend_logger.add_scalar(
+                "train/fine_t1_noise_alpha",
+                fine_t1_noise_alpha,
+                self.current_train_step,
+            )
+
         return [
-            move(batch["coarse_img_01"]),
-            move(batch["coarse_img_02"]),
-            move(batch["fine_img_01"]),
-            move(batch["fine_img_02"]),
+            coarse_img_01,
+            coarse_img_02,
+            fine_img_01,
+            fine_img_02,
         ]
+
+    @staticmethod
+    def _compute_fine_t1_noise_alpha(
+        global_step: int,
+        warmup_steps: int,
+        power: float,
+        alpha_tail: float = 0.0,
+    ) -> float:
+        if warmup_steps <= 0:
+            return 0.0
+        progress = max(0.0, min(1.0, max(float(global_step), 0.0) / float(warmup_steps)))
+        alpha = alpha_tail + (1.0 - alpha_tail) * (1.0 - (progress**power))
+        return max(0.0, min(1.0, alpha))
+
+    def _get_fine_t1_noise_alpha(self) -> float:
+        return self._compute_fine_t1_noise_alpha(
+            global_step=self.current_train_step,
+            warmup_steps=self.fine_t1_noise_total_steps,
+            power=self.fine_t1_noise_power,
+            alpha_tail=self.fine_t1_noise_alpha_tail,
+        )
 
     def _prepare_sample_inputs(self, batch):
         move = self._move_batch_tensor
@@ -213,9 +283,15 @@ class TrainEngine(BaseEngine):
             self.current_train_step += 1
 
             if iter_idx % self.train_log_interval == 0:
-                self.txt_logger.info(
-                    f"train epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}"
-                )
+                if self.fine_t1_noise_total_steps > 0:
+                    self.txt_logger.info(
+                        f"train epoch={self.current_epoch} iter={iter_idx} "
+                        f"loss={loss_value:.4e} fine_t1_noise_alpha={self._last_fine_t1_noise_alpha:.4f}"
+                    )
+                else:
+                    self.txt_logger.info(
+                        f"train epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}"
+                    )
 
         epoch_loss = tracker.results["loss"]
         self.backend_logger.add_scalar("loss/train_epoch", epoch_loss, self.current_epoch)

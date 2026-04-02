@@ -26,6 +26,8 @@
   - `train_log_interval`
   - `compile_model`, `compile_mode`, `compile_dynamic`
   - `use_channels_last`
+  - `fine_t1_noise_warmup_epochs`, `fine_t1_noise_warmup_steps`
+  - `fine_t1_noise_power`, `fine_t1_noise_std`, `fine_t1_noise_alpha_tail`
   - `val_step_log_keys`, `val_step_log_max_keys`, `val_step_save_csv`（验证步调试开关）
 - `TrainEngine` 已支持:
   - `torch.amp.autocast` + `torch.amp.GradScaler`

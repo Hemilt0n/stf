@@ -37,6 +37,26 @@ Validation step diagnostics (optional):
   - When `True`, dumps per-iter validation debug CSV to
     `runs/<task>/<exp>_<timestamp>/debug/val_step_epoch_XXXX.csv`.
 
+## Fine-T1 Noise Warmup Knobs
+
+Optional train-time anti-shortcut schedule on `fine_img_01`:
+
+- `train.fine_t1_noise_warmup_epochs`:
+  - default `0` (disabled).
+  - Warmup duration in epochs (ignored when `fine_t1_noise_warmup_steps > 0`).
+- `train.fine_t1_noise_warmup_steps`:
+  - default `0` (disabled).
+  - Warmup duration in steps; higher priority than `*_epochs`.
+- `train.fine_t1_noise_power`:
+  - default `4.0`.
+  - Decay curve exponent.
+- `train.fine_t1_noise_std`:
+  - default `1.0`.
+  - Gaussian noise std.
+- `train.fine_t1_noise_alpha_tail`:
+  - default `0.0`.
+  - Tail floor in `[0, 1)`: keep non-zero noise ratio after warmup.
+
 Sampler layout offline dump:
 
 ```bash

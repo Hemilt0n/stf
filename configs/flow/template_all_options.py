@@ -151,6 +151,12 @@ EXPERIMENT = ExperimentConfig(
         compile_mode="max-autotune",
         compile_dynamic=False,
         use_channels_last=True,
+        # Optional fine_t1 noise warmup knobs (OFF by default):
+        fine_t1_noise_warmup_epochs=0,
+        fine_t1_noise_warmup_steps=0,
+        fine_t1_noise_power=4.0,
+        fine_t1_noise_std=1.0,
+        fine_t1_noise_alpha_tail=0.0,
         # Debug/observability knobs (OFF by default):
         val_step_log_keys=False,
         val_step_log_max_keys=8,

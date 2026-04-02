@@ -6,6 +6,9 @@ def test_load_flow_config():
     assert exp.task == "flow"
     assert exp.model is not None
     assert exp.data.train_dataloader is not None
+    assert exp.train.fine_t1_noise_warmup_epochs == 0
+    assert exp.train.fine_t1_noise_warmup_steps == 0
+    assert exp.train.fine_t1_noise_alpha_tail == 0.0
     assert exp.train.val_step_log_keys is False
     assert exp.train.val_step_save_csv is False
 
@@ -43,6 +46,9 @@ def test_load_flow_template_all_options_config():
     assert exp.train.non_blocking_transfer is True
     assert exp.train.use_channels_last is True
     assert exp.train.compile_model is False
+    assert exp.train.fine_t1_noise_warmup_epochs == 0
+    assert exp.train.fine_t1_noise_warmup_steps == 0
+    assert exp.train.fine_t1_noise_alpha_tail == 0.0
     assert exp.train.val_step_log_keys is False
     assert exp.train.val_step_save_csv is False
 

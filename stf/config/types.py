@@ -30,6 +30,11 @@ class TrainConfig:
     compile_mode: str = "max-autotune"
     compile_dynamic: bool = False
     use_channels_last: bool = False
+    fine_t1_noise_warmup_epochs: int = 0
+    fine_t1_noise_warmup_steps: int = 0
+    fine_t1_noise_power: float = 4.0
+    fine_t1_noise_std: float = 1.0
+    fine_t1_noise_alpha_tail: float = 0.0
     val_step_log_keys: bool = False
     val_step_log_max_keys: int = 8
     val_step_save_csv: bool = False

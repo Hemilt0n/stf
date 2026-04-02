@@ -423,6 +423,27 @@
     `use_channels_last=True`
 - debug 项默认保持关闭。
 
+### 2026-04-02 15:10:00 +0800 | warmup 机制最小移植到主干（默认关闭）
+
+- 背景/目标:
+  - 在主干保留 `fine_t1` 噪声 warmup 能力，便于后续按需启用实验；默认不启用，不改变现有训练行为。
+- 实现与代码改动:
+  - `TrainConfig` 新增 warmup 字段:
+    - `fine_t1_noise_warmup_epochs`
+    - `fine_t1_noise_warmup_steps`
+    - `fine_t1_noise_power`
+    - `fine_t1_noise_std`
+    - `fine_t1_noise_alpha_tail`
+  - `TrainEngine` 接入 warmup 调度与输入替换:
+    - 训练输入阶段对 `fine_img_01` 按调度注入高斯噪声
+    - 记录 `train/fine_t1_noise_alpha` 到后端日志
+    - warmup 相关参数校验与 tail 约束
+  - 模板配置 `configs/flow/template_all_options.py` 补齐 warmup 选项（默认关闭）。
+  - 新增 smoke: `tests/smoke/test_fine_t1_noise_warmup.py`。
+- 验证:
+  - `tests/smoke/test_fine_t1_noise_warmup.py`
+  - `tests/smoke/test_config_loader.py`
+
 ### 回传模板（建议）
 
 - 时间:
