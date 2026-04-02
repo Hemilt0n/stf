@@ -19,6 +19,7 @@
 ## 2. 已落地的性能优化（master）
 
 - 训练侧新增性能开关（`TrainConfig`）:
+  - `grad_accum_steps`
   - `precision` (`fp16` / `bf16`)
   - `enable_tf32`
   - `deterministic`, `cudnn_benchmark`

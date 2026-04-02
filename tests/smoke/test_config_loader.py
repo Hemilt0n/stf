@@ -6,6 +6,7 @@ def test_load_flow_config():
     assert exp.task == "flow"
     assert exp.model is not None
     assert exp.data.train_dataloader is not None
+    assert exp.train.grad_accum_steps == 1
     assert exp.train.fine_t1_noise_warmup_epochs == 0
     assert exp.train.fine_t1_noise_warmup_steps == 0
     assert exp.train.fine_t1_noise_alpha_tail == 0.0
@@ -41,6 +42,7 @@ def test_load_flow_template_all_options_config():
     assert exp.task == "flow"
     assert exp.train.use_mixed_precision is True
     assert exp.train.precision == "bf16"
+    assert exp.train.grad_accum_steps == 1
     assert exp.train.enable_tf32 is True
     assert exp.train.cudnn_benchmark is True
     assert exp.train.non_blocking_transfer is True

@@ -22,6 +22,14 @@ Template config (full options, perf/debug categorized):
 - `configs/flow/template_all_options.py`
 - Use this as the default starting point for new branches/experiments.
 
+## Train Core Knobs
+
+- `train.grad_clip_norm`:
+  - gradient clipping threshold.
+- `train.grad_accum_steps`:
+  - default `1` (disabled / same behavior as before).
+  - when `>1`, accumulates gradients across multiple iterations before optimizer step.
+
 ## Train Debug Knobs
 
 Validation step diagnostics (optional):

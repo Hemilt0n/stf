@@ -32,6 +32,7 @@ class TrainEngine(BaseEngine):
             )
         self.amp_enabled = self.use_mixed_precision
         self.amp_dtype = torch.float16 if self.precision == "fp16" else torch.bfloat16
+        self.grad_accum_steps = int(getattr(experiment.train, "grad_accum_steps", 1))
         self.non_blocking_transfer = bool(getattr(experiment.train, "non_blocking_transfer", False))
         self.train_log_interval = max(1, int(getattr(experiment.train, "train_log_interval", 1)))
         self.use_channels_last = bool(getattr(experiment.train, "use_channels_last", False))
@@ -46,6 +47,8 @@ class TrainEngine(BaseEngine):
         self.val_step_log_keys = bool(getattr(experiment.train, "val_step_log_keys", False))
         self.val_step_log_max_keys = max(1, int(getattr(experiment.train, "val_step_log_max_keys", 8)))
         self.val_step_save_csv = bool(getattr(experiment.train, "val_step_save_csv", False))
+        if self.grad_accum_steps <= 0:
+            raise ValueError("train.grad_accum_steps must be >= 1")
         if self.fine_t1_noise_warmup_epochs < 0:
             raise ValueError("train.fine_t1_noise_warmup_epochs must be >= 0")
         if self.fine_t1_noise_warmup_steps < 0:
@@ -93,6 +96,10 @@ class TrainEngine(BaseEngine):
                 f"total_steps={self.fine_t1_noise_total_steps}, "
                 f"power={self.fine_t1_noise_power:.2f}, std={self.fine_t1_noise_std:.2f}, "
                 f"alpha_tail={self.fine_t1_noise_alpha_tail:.4f}"
+            )
+        if self.grad_accum_steps > 1:
+            self.txt_logger.info(
+                f"Enabled gradient accumulation: grad_accum_steps={self.grad_accum_steps}"
             )
 
         checkpoint_path = resume_from or experiment.resume_from
@@ -256,26 +263,33 @@ class TrainEngine(BaseEngine):
             self.train_loader.sampler.set_epoch(self.current_epoch)
 
         tracker = Tracker("loss")
+        self.optimizer.zero_grad(set_to_none=True)
+        num_iters = len(self.train_loader)
         for iter_idx, batch in enumerate(self.train_loader):
             inputs = self._prepare_train_inputs(batch)
 
-            self.optimizer.zero_grad(set_to_none=True)
             with autocast("cuda", dtype=self.amp_dtype, enabled=self.amp_enabled):
                 loss = self.model(*inputs)
+                loss_for_backward = loss / float(self.grad_accum_steps)
             if self.scaler.is_enabled():
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
+                self.scaler.scale(loss_for_backward).backward()
             else:
-                loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.experiment.train.grad_clip_norm)
-            if self.scaler.is_enabled():
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                self.optimizer.step()
+                loss_for_backward.backward()
 
-            if self.ema is not None:
-                self.ema.update()
+            should_step = ((iter_idx + 1) % self.grad_accum_steps == 0) or ((iter_idx + 1) == num_iters)
+            if should_step:
+                if self.scaler.is_enabled():
+                    self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.experiment.train.grad_clip_norm)
+                if self.scaler.is_enabled():
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+
+                if self.ema is not None:
+                    self.ema.update()
 
             loss_value = float(loss.item())
             tracker.update("loss", loss_value)

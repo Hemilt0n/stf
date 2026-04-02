@@ -138,6 +138,7 @@ EXPERIMENT = ExperimentConfig(
         val_interval=1,
         save_interval=1,
         grad_clip_norm=1.0,
+        grad_accum_steps=1,
         use_ema=True,
         train_log_interval=1,
         # Performance knobs (ON by default; aligned with change_aware_perf_24g.py):

@@ -21,6 +21,7 @@ class TrainConfig:
     use_mixed_precision: bool = True
     precision: str = "fp16"
     grad_clip_norm: float = 1.0
+    grad_accum_steps: int = 1
     enable_tf32: bool = False
     deterministic: bool = True
     cudnn_benchmark: bool = False

@@ -444,6 +444,21 @@
   - `tests/smoke/test_fine_t1_noise_warmup.py`
   - `tests/smoke/test_config_loader.py`
 
+### 2026-04-02 15:40:00 +0800 | 新增梯度累积配置（默认等价关闭）
+
+- 背景/目标:
+  - 支持 `micro-batch + grad accumulation` 训练形态，同时保证默认行为不变。
+- 实现与代码改动:
+  - `TrainConfig` 增加 `grad_accum_steps`（默认 `1`）。
+  - 训练循环改为按 `grad_accum_steps` 控制 optimizer step/update 频率。
+  - 当 `grad_accum_steps=1` 时行为与原先逐 iter 更新等价。
+  - 模板配置 `configs/flow/template_all_options.py` 补充该字段。
+- 验证:
+  - 新增 `tests/smoke/test_train_grad_accum.py`，覆盖：
+    - `grad_accum_steps=1` 时 optimizer.step 次数与 iter 数一致（等价不启用）。
+    - `grad_accum_steps>1` 时步数按累积逻辑执行。
+  - 兼容回归：`tests/smoke/test_config_loader.py`。
+
 ### 回传模板（建议）
 
 - 时间:
