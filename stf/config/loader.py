@@ -60,6 +60,4 @@ def load_experiment(config: str) -> ExperimentConfig:
     if not hasattr(module, "EXPERIMENT"):
         raise AttributeError(f"{config} does not define EXPERIMENT")
     exp = _coerce_experiment(getattr(module, "EXPERIMENT"))
-    if exp.task not in {"stfdiff", "flow"}:
-        raise ValueError(f"Unsupported task: {exp.task}")
     return exp

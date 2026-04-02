@@ -7,7 +7,7 @@ EXPERIMENT = ExperimentConfig(...)
 ```
 
 Key sections:
-- `task`: `"stfdiff"` or `"flow"`
+- `task`: arbitrary string (recommended convention: `"flow"` or `"stfdiff"`)
 - `name`: experiment name
 - `data`: dataloaders (`train/val/test`)
 - `model`: model module

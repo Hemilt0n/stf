@@ -390,6 +390,17 @@
     -> `<dataset>_serialized/{train,val,test}`
 - 该规范已写入 `docs/config.md` 与 `AGENTS.md`。
 
+### 2026-04-02 12:05:00 +0800 | `ExperimentConfig.task` 放开为自定义字符串
+
+- 背景/目标:
+  - 用户希望 `ExperimentConfig.task` 不再被固定白名单限制，支持自定义命名。
+- 实现与代码改动:
+  - 移除 `stf/config/loader.py` 中对 `task in {'flow','stfdiff'}` 的强校验。
+  - 保留文档建议约定（推荐继续使用 `flow` / `stfdiff`），但框架层不强制。
+  - 补充 smoke 测试 `tests/smoke/test_config_loader.py::test_load_config_with_custom_task`。
+- 验证:
+  - `test_config_loader` 覆盖默认配置与自定义 `task` 场景。
+
 ### 回传模板（建议）
 
 - 时间:

@@ -31,3 +31,26 @@ def test_load_flow_perf_compile_config():
     assert exp.task == "flow"
     assert exp.train.compile_model is True
     assert exp.train.compile_dynamic is True
+
+
+def test_load_config_with_custom_task(tmp_path):
+    cfg_path = tmp_path / "custom_task_cfg.py"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                "from stf.config.types import ExperimentConfig",
+                "",
+                "EXPERIMENT = ExperimentConfig(",
+                '    task=\"my_custom_task\",',
+                '    name=\"custom_task_smoke\",',
+                "    model=object(),",
+                "    optimizer=object(),",
+                ")",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exp = load_experiment(str(cfg_path))
+    assert exp.task == "my_custom_task"
