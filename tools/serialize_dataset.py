@@ -10,6 +10,11 @@ from typing import Iterable
 import numpy as np
 import tifffile
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - optional dependency
+    tqdm = None
+
 
 def _normalize_suffix(suffix: str) -> str:
     suffix = suffix.strip().lower()
@@ -56,30 +61,44 @@ def _serialize_single_root(
 ) -> dict:
     output_root.mkdir(parents=True, exist_ok=True)
 
-    total = 0
+    source_files = list(_iter_source_files(input_root, source_suffix))
+    total = len(source_files)
     converted = 0
     skipped = 0
     target_suffix = f".{array_format}"
 
-    for src_path in _iter_source_files(input_root, source_suffix):
-        total += 1
+    use_tqdm = tqdm is not None
+    iterable = source_files
+    if use_tqdm:
+        iterable = tqdm(source_files, desc=f"serialize:{input_root.name}", unit="file")
+    else:
+        print(
+            "[warn] tqdm is not installed; using plain progress logs. "
+            "Install tqdm for a live progress bar."
+        )
+
+    for idx, src_path in enumerate(iterable, start=1):
         rel = src_path.relative_to(input_root)
         dst_path = (output_root / rel).with_suffix(target_suffix)
         dst_path.parent.mkdir(parents=True, exist_ok=True)
 
         if dst_path.exists() and not overwrite:
             skipped += 1
+            if use_tqdm:
+                iterable.set_postfix(converted=converted, skipped=skipped, refresh=False)
             continue
 
         array = tifffile.imread(src_path)
         _save_array(dst_path, array, array_format)
         converted += 1
 
-        if converted % 200 == 0:
+        if use_tqdm:
+            iterable.set_postfix(converted=converted, skipped=skipped, refresh=False)
+        elif idx % 200 == 0 or idx == total:
             print(
                 "[progress] "
                 f"input={input_root} output={output_root} "
-                f"converted={converted} skipped={skipped} total_seen={total}"
+                f"converted={converted} skipped={skipped} seen={idx}/{total}"
             )
 
     marker = {
