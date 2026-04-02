@@ -40,6 +40,11 @@
 - 新增离线 sampler 布局导出脚本:
   - `tools/dump_sampler_layout.py`
   - 输出 `runs/debug/*.csv`，用于定位固定顺序 val 批次中的难样本位置。
+- 新增离线数据序列化脚本:
+  - `tools/serialize_dataset.py`
+  - 支持将 `.tif` 预处理为 `.npy/.npz`，保持目录结构并生成 `/.stf_serialized.json` 标记。
+  - 目录规范支持：`<dataset>/{train,val,test}` -> `<dataset>_serialized/{train,val,test}`（`--splits train,val,test`）。
+  - `LoadData` 已兼容 raw/serialized 自动读取；数据集存在 marker 时会优先 marker 指定后缀。
 
 ## 3. 最新实验结论（同步）
 

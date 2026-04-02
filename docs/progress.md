@@ -364,6 +364,32 @@
 - 结果:
   - 可直接将异常波动的 `val_step` 映射到具体批次位置与样本 key，区分“难样本分布”与“训练数值异常”。
 
+### 2026-04-02 11:20:00 +0800 | 离线序列化数据预处理与自动识别
+
+- 背景/目标:
+  - 当前 `is_serialize_data` 仅优化样本元信息访问，无法消除影像文件读取/解码开销。
+  - 需要提供离线预处理能力，并在训练侧自动兼容 raw/serialized 数据目录。
+- 实现与代码改动:
+  - 新增脚本:
+    - `tools/serialize_dataset.py`
+    - 将 `input-root` 下指定后缀（默认 `.tif`）离线转换为 `.npy/.npz`，并保持目录结构与文件 stem。
+    - 在输出根目录写入 `/.stf_serialized.json` 标记（包含 `data_suffix` 等元信息）。
+  - `LoadData` 读取扩展:
+    - `.tif` -> `tifffile.imread`
+    - `.npy/.npz` -> `numpy.load`
+  - 数据集自动识别:
+    - `SpatioTemporalFusionDataset` / `SpatioTemporalFusionDatasetForSPSTFM` 在数据根存在 marker 时，优先 marker 指定后缀，避免多后缀共存时采样歧义。
+- 验证:
+  - 新增 `tests/smoke/test_data_serialization_io.py`（格式读取兼容 + marker 后缀优先）。
+  - 新增 `tests/smoke/test_serialize_dataset_tool.py`（脚本输出与 marker 冒烟）。
+
+补充（2026-04-02 11:35:00 +0800）| 目录规范化:
+- 将脚本默认输出规则改为同级 `_serialized` 目录，便于 dataroot 切换：
+  - 单 split: `<root>/train` -> `<root>_serialized/train`
+  - 多 split: `<dataset>/{train,val,test}` + `--splits train,val,test`
+    -> `<dataset>_serialized/{train,val,test}`
+- 该规范已写入 `docs/config.md` 与 `AGENTS.md`。
+
 ### 回传模板（建议）
 
 - 时间:

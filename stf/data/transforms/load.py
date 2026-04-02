@@ -1,6 +1,7 @@
 import tifffile
 import numpy as np
 import scipy.io as sio
+from pathlib import Path
 
 
 class LoadData:
@@ -16,8 +17,18 @@ class LoadData:
         return data_info
 
     def load_data(self, data_path: str):
-        data = tifffile.imread(data_path)
-        return data
+        path = Path(data_path)
+        suffix = path.suffix.lower()
+        if suffix == ".npy":
+            return np.load(path, allow_pickle=False)
+        if suffix == ".npz":
+            with np.load(path, allow_pickle=False) as npz:
+                if len(npz.files) != 1:
+                    raise ValueError(
+                        f"Expected single-array npz file, got keys={npz.files} for {data_path}"
+                    )
+                return npz[npz.files[0]]
+        return tifffile.imread(path)
 
     def __call__(self, data_info: dict):
         return self.transform(data_info)

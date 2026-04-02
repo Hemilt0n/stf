@@ -45,6 +45,41 @@ uv run python tools/dump_sampler_layout.py \
 Default output:
 - `runs/debug/<exp_name>_<split>_sampler_epoch<epoch>_<timestamp>.csv`
 
+## Offline Dataset Serialization
+
+Convert raw raster files (for example `.tif`) to serialized arrays (`.npy` / `.npz`)
+while preserving directory structure:
+
+```bash
+uv run python tools/serialize_dataset.py \
+  --input-root data/CIA/train \
+  --source-suffix .tif \
+  --format npy
+```
+
+Notes:
+- If `--output-root` is omitted, output defaults to sibling `<input-root>_serialized`.
+- Output keeps the same folder layout and file stem; suffix changes to `.npy` or `.npz`.
+- A marker file `/.stf_serialized.json` is generated under `output-root`.
+- Training/inference uses the same config style; loader auto reads:
+  - raw raster (`.tif`) via `tifffile`
+  - serialized array (`.npy` / `.npz`) via `numpy`
+- If marker exists, dataset will prefer marker-declared suffix when multiple suffixes co-exist.
+
+Recommended dataset-level conversion (your convention):
+
+```bash
+uv run python tools/serialize_dataset.py \
+  --input-root data/CIA/private_data/hh_setting-1-patch \
+  --splits train,val,test \
+  --format npy
+```
+
+This creates:
+- `data/CIA/private_data/hh_setting-1-patch_serialized/train`
+- `data/CIA/private_data/hh_setting-1-patch_serialized/val`
+- `data/CIA/private_data/hh_setting-1-patch_serialized/test`
+
 ## Change-aware knobs (model-level)
 
 The following optional arguments are now supported in core models:

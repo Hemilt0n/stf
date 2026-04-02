@@ -5,6 +5,28 @@ import copy
 import re
 import numpy as np
 import pickle
+import json
+
+
+def _load_preferred_data_suffix(data_root: Path):
+    marker_path = data_root / ".stf_serialized.json"
+    if not marker_path.exists():
+        return None
+    try:
+        with marker_path.open("r", encoding="utf-8") as f:
+            marker = json.load(f)
+    except Exception:
+        return None
+
+    suffix = marker.get("data_suffix")
+    if suffix is None:
+        return None
+    suffix = str(suffix).strip()
+    if not suffix:
+        return None
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    return suffix.lower()
 
 
 class SpatioTemporalFusionDataset(Dataset):
@@ -24,6 +46,7 @@ class SpatioTemporalFusionDataset(Dataset):
         self.data_name_tmpl_dict = data_name_tmpl_dict
         # self.search_key = 'fine_img_01'
         self.search_key = list(data_prefix_tmpl_dict.keys())[0]
+        self.preferred_data_suffix = _load_preferred_data_suffix(self.data_root)
         self.data_path_list = self.load_data_list()
 
         self.is_serialize_data = is_serialize_data
@@ -98,6 +121,11 @@ class SpatioTemporalFusionDataset(Dataset):
                 list(data_prefix_path.glob(data_name_regexp_for_pathlib))
             )
             for data_path in data_path_list:
+                if (
+                    self.preferred_data_suffix is not None
+                    and data_path.suffix.lower() != self.preferred_data_suffix
+                ):
+                    continue
                 data_file_name, data_file_suffix = (
                     data_path.stem,
                     data_path.suffix,
@@ -163,6 +191,7 @@ class SpatioTemporalFusionDatasetForSPSTFM(Dataset):
         self.data_suffix_dcit = data_suffix_dcit
         # self.search_key = 'fine_img_01'
         self.search_key = list(data_prefix_tmpl_dict.keys())[0]
+        self.preferred_data_suffix = _load_preferred_data_suffix(self.data_root)
         self.data_path_list = self.load_data_list()
 
         self.is_serialize_data = is_serialize_data
@@ -274,6 +303,11 @@ class SpatioTemporalFusionDatasetForSPSTFM(Dataset):
                 list(data_prefix_path.glob(data_name_regexp_for_pathlib))
             )
             for data_path in data_path_list:
+                if (
+                    self.preferred_data_suffix is not None
+                    and data_path.suffix.lower() != self.preferred_data_suffix
+                ):
+                    continue
                 data_file_name, data_file_suffix = (
                     data_path.stem,
                     data_path.suffix,
