@@ -517,6 +517,24 @@
     - `grad_accum_steps>1` 时步数按累积逻辑执行。
   - 兼容回归：`tests/smoke/test_config_loader.py`。
 
+### 2026-04-13 18:30:00 +0800 | 远程 compare 编排改为“每 config 一个 tmux session，helper 串行调度”
+
+- 背景/目标:
+  - 先前远程 compare 流程容易退化为“多次 `launch` -> 多个 session 并发抢同一 GPU”。
+  - 目标是保留“每个 config 各自独立 tmux session、名称可恢复”的优点，同时从 helper 层保证串行，不再依赖 skill 文本约束或临时自定义 `--remote-command`。
+- 实现与代码改动:
+  - `.codex/skills/remote-train-orchestrator/scripts/remote_train.sh` 现支持重复 `--config`。
+  - 单 config 启动行为保持原样。
+  - 多 config 启动时:
+    - helper 先统一 stage 所有 config 到远程；
+    - 启动一个 queue/controller session；
+    - controller 顺序拉起每个 config 自己的命名 `tmux session`；
+    - 任意时刻仅允许一个 child config session 运行；
+    - 本地 record 增补 queue/session/config list、active child session、sequential confirmation 等字段。
+  - `.codex/skills/remote-train-orchestrator/SKILL.md` 与 `AGENTS.md` 同步更新为新的 helper 语义与推荐调用。
+- 验证:
+  - `bash -n .codex/skills/remote-train-orchestrator/scripts/remote_train.sh`
+
 ### 回传模板（建议）
 
 - 时间:

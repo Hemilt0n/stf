@@ -18,6 +18,8 @@ Current workflow assumptions:
 1. Delegate long remote runs to a worker subagent.
 Keep the main agent context small. The worker owns preflight, staging, launch, startup monitoring, and later follow-up. The main agent should retain only the session name, record path, and a short status summary.
 
+For comparison runs or any remote workflow that can burn substantial GPU time, prefer a stronger worker model (`gpt-5.4` with `high` reasoning effort or above) rather than a mini model. The skill can state this requirement, but the caller must still enforce it explicitly in `spawn_agent`.
+
 2. Do not auto-sync code versions.
 Always compare local and remote git heads before launch. If they differ, stop and tell the user. Do not auto-`git pull`, auto-`git push`, or patch the remote repo in place unless the user explicitly asks.
 
@@ -29,6 +31,9 @@ In this environment, `tailscale ssh ... 'cat > remote-file' < local-file` is pro
 
 5. Monitor only the startup window.
 After launch, watch the `tmux` pane briefly to catch immediate errors. Once startup is stable, stop streaming logs into context. Re-check later through the record file and `tmux` or run-artifact inspection.
+
+6. Multi-experiment comparisons must be serialized unless the user explicitly requests parallelism.
+If the task is an A/B or multi-config comparison on the same remote host, do not launch separate independent runs that target the same GPU by default. Prefer one queue controller and sequential execution order. Each config run should still get its own named `tmux` session, but only one config session should be active at a time unless the user explicitly asks for parallelism and the GPU allocation is unambiguous.
 
 ## Standard Workflow
 
@@ -80,22 +85,37 @@ bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch \
 Default launch behavior:
 - compare local and remote git heads
 - stage the config to remote `configs/remote/<name>__<timestamp>.py`
-- create a meaningful tmux session name from `task`, `name`, and timestamp
-- run `tools/train_queue.sh` on the remote host
+- for single-config launch: create one meaningful `tmux` session from `task`, `name`, and timestamp
+- for multi-config launch: create one queue controller session and let it start one per-config `tmux` session at a time, in order
+- run `tools/train_queue.sh` for each config on the remote host
 - write local runtime state under `log/remote_runs/`
 
 Local runtime files:
 - `log/remote_runs/records/<session>.json`
 - `log/remote_runs/experiments.md`
 
-If the user explicitly wants a custom remote command for smoke testing, use `--remote-command`.
+If the user explicitly wants a custom remote command for smoke testing, use `--remote-command` only for a single-config launch.
+
+For compare runs that should execute sequentially, pass multiple `--config` values to one `launch` call. The helper will stage all configs, create one queue controller session, and then sequentially create one named `tmux` session per config. The default shape is:
+
+```bash
+bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch \
+  --config configs/remote/<baseline>.py \
+  --config configs/remote/<variant>.py \
+  --purpose "<compare purpose>" \
+  --gpu 0 \
+  --startup-seconds 20
+```
+
+Use one queue session name for recovery and record the ordered config list plus the per-config child sessions in the summary.
 
 ### 4. Startup Monitoring
 
 During the first check window, verify:
 - `tmux has-session -t <session>` still succeeds
 - pane output does not show import errors, config errors, missing data, or CUDA setup failure
-- the queue state file is being written when using the default launch command
+- the queue/controller state file is being written when using the default launch command
+- for compare queues, the first child config session exists and later configs have not started yet
 
 If the session exits during startup, inspect the pane tail and report the failure instead of retrying blindly.
 
@@ -104,8 +124,9 @@ If the session exits during startup, inspect the pane tail and report the failur
 Reconstruct state from:
 - `log/remote_runs/records/<session>.json`
 - `log/remote_runs/experiments.md`
-- remote `tmux` session
-- remote queue state file
+- remote controller `tmux` session, if still running
+- remote child `tmux` session, if one config is currently active
+- remote queue/controller state file
 - latest matching run directory under `runs/<task>/<name>_*`
 
 Use:
@@ -115,7 +136,8 @@ bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh status --se
 ```
 
 When the run is finished, `status` should be enough to recover:
-- whether the session is still alive
+- whether the controller session is still alive
+- which child config session is currently active, if any
 - the latest pane tail
 - queue state tail
 - latest matching run directory
@@ -125,9 +147,9 @@ When the run is finished, `status` should be enough to recover:
 ## Reporting Expectations
 
 When reporting back to the main agent or the user:
-- give the session name
+- give the queue session name
 - give the local record path
-- give the remote staged config path
+- give the remote staged config path or ordered staged config list
 - state whether startup passed
 - if completed, quote the final validation summary line and GPU memory summary line
 - update `log/remote_runs/experiments.md` through the helper-driven record flow instead of pasting long raw logs into context
@@ -140,6 +162,8 @@ When reporting back to the main agent or the user:
 - Do not assume `configs/remote/` already exists locally; create it only when needed.
 - Do not assume dataset roots from local configs are valid on the remote host.
 - Do not assume helper scripts mentioned in old docs still exist; inspect the current repo before depending on them.
+- Do not treat “launch baseline, then launch variant” as sequential execution; if both config sessions are alive at once on the same GPU, that is parallelism.
+- Do not open multiple config sessions on the same GPU for a comparison run unless the user explicitly asked for parallel execution.
 
 ## Resources
 

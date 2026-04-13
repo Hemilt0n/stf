@@ -83,6 +83,7 @@
   - 在本机无 GPU、服务器有 GPU 的前提下，通过 `tailscale ssh hang@home-pc-ubuntu` 发起远程训练。
   - 训练前强制检查本地/远程 git head 是否一致。
   - 远程运行使用命名 `tmux session`，避免本地休眠导致任务丢失。
+  - 多配置对比任务由 helper 串行编排：每个 config 各自拥有命名 `tmux session`，但同一条 compare queue 任意时刻只允许一个 config session 运行。
   - 主线程上下文只保留摘要，长日志留在远程和本地记录文件中。
 - 本地记录约定:
   - 运行状态记录: `log/remote_runs/records/<session>.json`
@@ -101,6 +102,7 @@
 - 当前推荐调用:
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh inspect`
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch --config ... --purpose ...`
+  - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch --config ... --config ... --purpose ...`（对比任务：顺序执行，每个 config 单独 tmux session）
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh status --session ...`
 
 ## 3.2 `fine_t1` warmup 严格配对复核（2026-04-01）
