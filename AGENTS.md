@@ -7,10 +7,10 @@
 - 本仓库统一使用 `AGENTS.md`（复数）作为会话上下文入口文档。
 - 旧文件名 `AGENT.md` 已废弃，不再维护。
 
-## 1. 当前状态（2026-03-24）
+## 1. 当前状态（2026-04-13）
 
 - 仓库路径: `/home/hang/repos/stf`
-- 当前分支: `master`
+- 当前主干分支: `master`
 - 远程仓库: `origin = https://github.com/Hemilt0n/stf.git`
 - 已合入 `master` 的关键提交:
   - `677dbde`（合并 `research/perf-24g-flow`）
@@ -73,6 +73,35 @@
 
 - `ExperimentConfig.task` 现已允许任意字符串（`stf/config/loader.py` 不再做白名单校验）。
 - 建议约定仍使用 `flow` / `stfdiff`，便于目录组织与团队协作；但框架不再强制限制。
+
+## 3.4 远程训练工作流（2026-04-13）
+
+- 新增仓库私有 skill:
+  - `.codex/skills/remote-train-orchestrator/`
+  - 入口脚本: `.codex/skills/remote-train-orchestrator/scripts/remote_train.sh`
+- 设计目标:
+  - 在本机无 GPU、服务器有 GPU 的前提下，通过 `tailscale ssh hang@home-pc-ubuntu` 发起远程训练。
+  - 训练前强制检查本地/远程 git head 是否一致。
+  - 远程运行使用命名 `tmux session`，避免本地休眠导致任务丢失。
+  - 主线程上下文只保留摘要，长日志留在远程和本地记录文件中。
+- 本地记录约定:
+  - 运行状态记录: `log/remote_runs/records/<session>.json`
+  - 实验账本: `log/remote_runs/experiments.md`
+- 远程配置约定:
+  - 远程专用配置在本地 `configs/remote/*.py` 编辑，然后单独下发到服务器。
+  - `configs/remote/*` 为机器本地覆盖区，默认不纳入 git；只保留 `.gitkeep`。
+- 当前远程环境已核对事实:
+  - 远程主机: `hang@home-pc-ubuntu`
+  - 远程仓库: `/home/hang/repos/stf`
+  - 远程 `data -> /home/hang/data`
+  - 远程 `runs -> /mnt/d/hang/results/stf`
+  - `tmux` 可用
+- 当前推荐数据根:
+  - CIA serialized: `data/CIA/band4_serialized`
+- 当前推荐调用:
+  - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh inspect`
+  - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch --config ... --purpose ...`
+  - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh status --session ...`
 
 ## 3.2 `fine_t1` warmup 严格配对复核（2026-04-01）
 
@@ -159,6 +188,7 @@ git cherry-pick <commit1> <commit2> ...
 ```bash
 uv run python -m compileall -q stf/models
 uv run pytest -q tests/smoke
+bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh inspect
 ```
 
 训练入口:

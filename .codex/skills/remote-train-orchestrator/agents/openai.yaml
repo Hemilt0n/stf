@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Train"
+  short_description: "Run and track STF training on the remote GPU server"
+  default_prompt: "Use $remote-train-orchestrator to stage a remote STF config, launch it in tmux, and track the experiment."

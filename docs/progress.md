@@ -1,7 +1,7 @@
 # STF 项目进展记录
 
-最后更新: 2026-03-31 16:12:12 +0800  
-当前分支: `dev/fine-t1-noise-warmup`
+最后更新: 2026-04-13 11:10:00 +0800  
+当前分支: `feat/repo-private-remote-run-skill`
 
 ## 1. 文档用途
 
@@ -215,6 +215,64 @@
 - 验证:
   - `uv run pytest -q tests/smoke/test_fine_t1_noise_warmup.py tests/smoke/test_config_loader.py`
   - 结果：`11 passed`
+
+### 2026-04-13 10:20:00 +0800 | `feat/repo-private-remote-run-skill`（进行中）
+
+- 背景/目标:
+  - 本机仅用于调研、改代码与轻量测试，真实训练需要在远程 GPU 服务器执行。
+  - 需要一套仓库内可恢复、低上下文污染的远程训练工作流。
+- 实现与代码改动:
+  - 新增仓库私有 skill: `.codex/skills/remote-train-orchestrator/`。
+  - 新增 skill 主文档 `SKILL.md`，约定远程预检、远程配置 staging、`tmux` 启动、记录恢复、结果汇报流程。
+  - 新增 `references/observed-environment.md`，记录当前远程主机、`data/`、`runs/`、`tmux`、CIA 数据根等已核对事实。
+  - 新增 `scripts/remote_train.sh`，提供 `inspect` / `launch` / `status` 三个子命令。
+  - 本地运行记录约定为 `log/remote_runs/records/*.json` 与 `log/remote_runs/experiments.md`。
+- 验证:
+  - `python3 /home/hang/.codex/skills/.system/skill-creator/scripts/quick_validate.py .codex/skills/remote-train-orchestrator`
+  - 结果：`Skill is valid!`
+  - 使用无害 smoke run 验证 `tailscale ssh` 下发配置、远程 `tmux`、本地 record/ledger、`status` 恢复链路。
+- 总结与下一步:
+  - 仓库内已具备可复用的远程训练托管流程。
+  - 下一步优先补充 ETA 估算与远程通知钩子。
+
+### 2026-04-13 10:57:38 +0800 | `feat/repo-private-remote-run-skill`（远程实训）
+
+- 背景/目标:
+  - 用新 skill 实跑一次真实远程训练，验证端到端流程不是只停留在 smoke。
+  - 配置参考 `configs/flow/template_all_options.py`，数据集使用 CIA，训练 10 epochs。
+- 实现与代码改动:
+  - 基于模板配置生成远程专用本地配置 `configs/remote/cia_template_10ep.py`（不纳入 git）。
+  - 通过 skill 在远程生成 staged config:
+    - `/home/hang/repos/stf/configs/remote/cia_template_10ep__20260413-105738.py`
+  - 训练会话:
+    - `tmux session = stf-flow-cia-template-10ep-20260413-105738`
+  - 本地状态记录:
+    - `log/remote_runs/records/stf-flow-cia-template-10ep-20260413-105738.json`
+    - `log/remote_runs/experiments.md`
+- 预检与问题处理:
+  - 发现本地与远程 git head 不一致。
+  - 处理方式：远程仓库拉到当前 `origin/master` 并与本地跟踪 head 对齐后再启动。
+  - 核对远程 CIA 数据根为 `data/CIA/band4_serialized`。
+- 结果:
+  - 最终运行目录:
+    - `/home/hang/repos/stf/runs/flow/cia_template_10ep_20260413-105742`
+  - `epoch=9` 验证结果:
+    - `val loss=0.0176`
+    - `RMSE=0.0655`
+    - `MAE=0.0411`
+    - `PSNR=23.7844`
+    - `SSIM=0.3856`
+    - `ERGAS=6.2441`
+    - `CC=0.3182`
+    - `SAM=0.2484`
+    - `UIQI=0.2648`
+    - `TRP=-0.0284`
+  - GPU 显存摘要:
+    - `peak_allocated=10726.43 MiB (65.50%)`
+    - `peak_reserved=11964.00 MiB (73.06%)`
+- 总结与下一步:
+  - 远程训练 skill 已通过真实 10 epoch CIA 运行验证。
+  - 下一步可在 `status` 基础上增加 ETA 估算，以及训练结束通知钩子。
 
 ## 4. 已有验证结果（当前可确认）
 
