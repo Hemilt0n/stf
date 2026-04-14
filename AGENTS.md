@@ -93,6 +93,10 @@
 - 远程配置约定:
   - 远程专用配置在本地 `configs/remote/*.py` 编辑，然后单独下发到服务器。
   - `configs/remote/*` 为机器本地覆盖区，默认不纳入 git；只保留 `.gitkeep`。
+  - 为便于人工检查，helper 会自动维护三个本地状态目录：
+    - `configs/remote/review/<session>/`：待检查 / 待确认启动
+    - `configs/remote/running/<session>/`：正在执行
+    - `configs/remote/completed/<session>/`：已完成
 - 当前远程环境已核对事实:
   - 远程主机: `hang@home-pc-ubuntu`
   - 远程仓库: `/home/hang/repos/stf`

@@ -34,6 +34,21 @@ ensure_runtime_dirs() {
   mkdir -p "$(records_dir)"
 }
 
+remote_config_root() {
+  printf '%s\n' "${REPO_ROOT}/configs/remote"
+}
+
+remote_config_state_dir() {
+  printf '%s\n' "$(remote_config_root)/$1"
+}
+
+ensure_local_remote_config_dirs() {
+  mkdir -p \
+    "$(remote_config_state_dir review)" \
+    "$(remote_config_state_dir running)" \
+    "$(remote_config_state_dir completed)"
+}
+
 now_ts() {
   date '+%Y-%m-%d %H:%M:%S %z'
 }
@@ -72,6 +87,51 @@ stage_file_to_remote() {
   local src="$1"
   local dst="$2"
   remote_exec "mkdir -p $(printf '%q' "$(dirname "${dst}")") && cat > $(printf '%q' "${dst}")" <"${src}"
+}
+
+snapshot_config_list_to_state_dir() {
+  local state="$1"
+  local session_name="$2"
+  local array_name="$3"
+  local state_dir
+  local idx=0
+  state_dir="$(remote_config_state_dir "${state}")/${session_name}"
+  mkdir -p "${state_dir}"
+
+  local -n src_list="${array_name}"
+  local -a dst_list=()
+  for src in "${src_list[@]}"; do
+    idx=$((idx + 1))
+    local base
+    local dst
+    printf -v base '%02d_%s' "${idx}" "$(basename "${src}")"
+    dst="${state_dir}/${base}"
+    cp "${src}" "${dst}"
+    dst_list+=("${dst}")
+  done
+  src_list=("${dst_list[@]}")
+}
+
+stage_current_config_list_to_remote() {
+  for idx in "${!CONFIG_LOCAL_LIST[@]}"; do
+    stage_file_to_remote "${CONFIG_LOCAL_LIST[$idx]}" "${CONFIG_REMOTE_LIST[$idx]}"
+  done
+}
+
+refresh_config_list_json() {
+  CONFIG_LOCAL_LIST_JSON="$(json_array_from_args "${CONFIG_LOCAL_LIST[@]}")"
+  CONFIG_REMOTE_LIST_JSON="$(json_array_from_args "${CONFIG_REMOTE_LIST[@]}")"
+  SESSION_LIST_JSON="$(json_array_from_args "${CHILD_SESSION_LIST[@]}")"
+  if [[ "${#CONFIG_LOCAL_LIST[@]}" -gt 0 ]]; then
+    CONFIG_LOCAL="${CONFIG_LOCAL_LIST[0]}"
+  else
+    CONFIG_LOCAL=""
+  fi
+  if [[ "${#CONFIG_REMOTE_LIST[@]}" -gt 0 ]]; then
+    CONFIG_REMOTE="${CONFIG_REMOTE_LIST[0]}"
+  else
+    CONFIG_REMOTE=""
+  fi
 }
 
 local_git_branch() {
@@ -532,6 +592,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 ensure_runtime_dirs
+ensure_local_remote_config_dirs
 
 collect_remote_context() {
   LOCAL_BRANCH="$(local_git_branch)"
@@ -629,10 +690,6 @@ build_launch_artifacts() {
       echo "tmux session already exists: ${child_session}" >&2
       exit 4
     fi
-  done
-
-  for idx in "${!CONFIG_LOCAL_LIST[@]}"; do
-    stage_file_to_remote "${CONFIG_LOCAL_LIST[$idx]}" "${CONFIG_REMOTE_LIST[$idx]}"
   done
 
   if [[ "${#CONFIGS[@]}" -eq 1 ]]; then
@@ -798,6 +855,7 @@ write_runtime_record() {
     fi
   fi
 
+  finalize_local_config_state
   CREATED_AT="${CREATED_AT:-$(now_ts)}"
   UPDATED_AT="$(now_ts)"
   RECORD_PATH="$(record_path_for_session "${SESSION}")"
@@ -838,6 +896,8 @@ write_runtime_record() {
 }
 
 write_prepared_record() {
+  snapshot_config_list_to_state_dir "review" "${SESSION}" CONFIG_LOCAL_LIST
+  refresh_config_list_json
   STATUS="prepared"
   STARTUP_PASSED="0"
   ACTIVE_SESSION=""
@@ -869,6 +929,41 @@ write_prepared_record() {
       "keep_finished_session: ${KEEP_FINISHED_SESSION}"
   fi
   rm -f "${PANE_FILE}" "${STATE_FILE_TMP}"
+}
+
+finalize_local_config_state() {
+  if [[ "${STATUS}" != "completed" && "${STATUS}" != "failed" ]]; then
+    return
+  fi
+  if [[ -z "${CONFIG_LOCAL_LIST_JSON:-}" ]]; then
+    return
+  fi
+
+  mapfile -t CONFIG_LOCAL_LIST < <(json_array_to_lines "${CONFIG_LOCAL_LIST_JSON}")
+  mapfile -t CONFIG_REMOTE_LIST < <(json_array_to_lines "${CONFIG_REMOTE_LIST_JSON:-[]}")
+  mapfile -t CHILD_SESSION_LIST < <(json_array_to_lines "${SESSION_LIST_JSON:-[]}")
+  if [[ "${#CONFIG_LOCAL_LIST[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  case "${CONFIG_LOCAL_LIST[0]}" in
+    "$(remote_config_state_dir completed)/"*)
+      return
+      ;;
+  esac
+
+  local first_path old_dir
+  first_path="${CONFIG_LOCAL_LIST[0]}"
+  old_dir="$(dirname "${first_path}")"
+
+  snapshot_config_list_to_state_dir "completed" "${SESSION}" CONFIG_LOCAL_LIST
+  refresh_config_list_json
+
+  case "${old_dir}" in
+    "$(remote_config_state_dir running)/"*)
+      rm -rf "${old_dir}"
+      ;;
+  esac
 }
 
 case "${COMMAND}" in
@@ -916,6 +1011,9 @@ PY
 
   launch)
     build_launch_artifacts
+    snapshot_config_list_to_state_dir "running" "${SESSION}" CONFIG_LOCAL_LIST
+    refresh_config_list_json
+    stage_current_config_list_to_remote
     start_prepared_launch
     write_runtime_record "launch"
     ;;
@@ -930,6 +1028,8 @@ PY
     HOST="${HOST:-${DEFAULT_HOST}}"
     REMOTE_REPO="${REMOTE_REPO:-${DEFAULT_REMOTE_REPO}}"
     REMOTE_CONFIG_DIR="${REMOTE_CONFIG_DIR:-${DEFAULT_REMOTE_REPO}/configs/remote}"
+    STATE_TRACK_FILE="${STATE_FILE:-}"
+    REMOTE_COMMAND_VALUE="${REMOTE_COMMAND:-}"
     CONTROLLER_SESSION="${CONTROLLER_SESSION:-${SESSION}}"
     STARTUP_PASSED="0"
     ACTIVE_SESSION=""
@@ -950,6 +1050,9 @@ PY
       fi
     done
 
+    snapshot_config_list_to_state_dir "running" "${SESSION}" CONFIG_LOCAL_LIST
+    refresh_config_list_json
+    stage_current_config_list_to_remote
     start_prepared_launch
     write_runtime_record "launch-prepared"
     ;;
@@ -964,6 +1067,8 @@ PY
       UPDATED_AT="$(now_ts)"
       PANE_FILE="$(mktemp)"
       STATE_FILE_TMP="$(mktemp)"
+      STATE_TRACK_FILE="${STATE_FILE:-}"
+      REMOTE_COMMAND_VALUE="${REMOTE_COMMAND:-}"
       export CREATED_AT UPDATED_AT STATUS HOST REMOTE_REPO REMOTE_CONFIG_DIR LOCAL_BRANCH LOCAL_HEAD LOCAL_STATUS REMOTE_BRANCH REMOTE_HEAD REMOTE_STATUS REMOTE_DATA_LINK TMUX_PATH SESSION PURPOSE CONFIG_LOCAL CONFIG_REMOTE TASK NAME MESSAGE GPU RETRIES DELAY_SEC STARTUP_SECONDS STATE_TRACK_FILE REMOTE_COMMAND_VALUE QUEUE_MODE CONTROLLER_SESSION ACTIVE_SESSION QUEUE_STATE_FILE STARTUP_PASSED SEQUENTIAL_CONFIRMED SEQUENTIAL_CONFIRMATION ALLOW_VERSION_MISMATCH KEEP_FINISHED_SESSION CONFIG_LOCAL_LIST_JSON CONFIG_REMOTE_LIST_JSON SESSION_LIST_JSON
       write_record "${RECORD_PATH}" "${PANE_FILE}" "${STATE_FILE_TMP}"
       append_ledger \
@@ -1049,9 +1154,10 @@ PY
       fi
     fi
 
+    finalize_local_config_state
     UPDATED_AT="$(now_ts)"
     CREATED_AT="${CREATED_AT:-${UPDATED_AT}}"
-    export CREATED_AT UPDATED_AT STATUS HOST REMOTE_REPO REMOTE_CONFIG_DIR LOCAL_BRANCH LOCAL_HEAD LOCAL_STATUS REMOTE_BRANCH REMOTE_HEAD REMOTE_STATUS REMOTE_DATA_LINK TMUX_PATH SESSION PURPOSE CONFIG_LOCAL CONFIG_REMOTE TASK NAME MESSAGE GPU RETRIES DELAY_SEC STARTUP_SECONDS STATE_TRACK_FILE REMOTE_COMMAND_VALUE QUEUE_MODE CONTROLLER_SESSION ACTIVE_SESSION QUEUE_STATE_FILE STARTUP_PASSED SEQUENTIAL_CONFIRMED SEQUENTIAL_CONFIRMATION ALLOW_VERSION_MISMATCH CONFIG_LOCAL_LIST_JSON CONFIG_REMOTE_LIST_JSON SESSION_LIST_JSON
+    export CREATED_AT UPDATED_AT STATUS HOST REMOTE_REPO REMOTE_CONFIG_DIR LOCAL_BRANCH LOCAL_HEAD LOCAL_STATUS REMOTE_BRANCH REMOTE_HEAD REMOTE_STATUS REMOTE_DATA_LINK TMUX_PATH SESSION PURPOSE CONFIG_LOCAL CONFIG_REMOTE TASK NAME MESSAGE GPU RETRIES DELAY_SEC STARTUP_SECONDS STATE_TRACK_FILE REMOTE_COMMAND_VALUE QUEUE_MODE CONTROLLER_SESSION ACTIVE_SESSION QUEUE_STATE_FILE STARTUP_PASSED SEQUENTIAL_CONFIRMED SEQUENTIAL_CONFIRMATION ALLOW_VERSION_MISMATCH KEEP_FINISHED_SESSION CONFIG_LOCAL_LIST_JSON CONFIG_REMOTE_LIST_JSON SESSION_LIST_JSON
     write_record "${RECORD_PATH}" "${PANE_FILE}" "${STATE_FILE_TMP}" "${LATEST_RUN_DIR}" "${FINAL_VAL_LINE}" "${GPU_SUMMARY_LINE}"
     append_ledger \
       "status | session \`${SESSION}\`" \

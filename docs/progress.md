@@ -553,6 +553,20 @@
   - 远程执行更适合“先准备、后确认、再执行”的协作节奏。
   - 结束后的 `tmux` pane 可被用户手动检查，不再必须依赖日志文件回溯。
 
+补充（2026-04-14 20:20:00 +0800）| 本地 `configs/remote` 增加最小状态分类:
+- 背景/目标:
+  - 当远程配置变多时，仅靠文件名在 `configs/remote/` 根目录中查找，不利于用户快速定位“待检查 / 正在执行 / 已完成”的配置。
+- 实现与代码改动:
+  - helper 现在自动维护三个本地目录：
+    - `configs/remote/review/<session>/`
+    - `configs/remote/running/<session>/`
+    - `configs/remote/completed/<session>/`
+  - `prepare` 将本地配置快照到 `review/`；
+  - `launch` / `launch-prepared` 将实际执行版本快照到 `running/`；
+  - `status` 在终态时把本地执行快照归档到 `completed/`。
+- 约束:
+  - 不额外引入更复杂的状态层级，避免目录状态机膨胀。
+
 ### 回传模板（建议）
 
 - 时间:

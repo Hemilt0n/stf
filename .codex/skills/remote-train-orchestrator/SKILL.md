@@ -28,6 +28,11 @@ Create or edit the local config under `configs/remote/` when needed, but do not 
 
 When the user wants a review checkpoint before execution, prefer the two-phase helper flow: `prepare` first, then `launch-prepared` only after the user confirms.
 
+For local browsing convenience, the helper keeps lightweight config snapshots under:
+- `configs/remote/review/<session>/` for prepared configs waiting for inspection
+- `configs/remote/running/<session>/` for configs currently being executed
+- `configs/remote/completed/<session>/` for finished configs
+
 4. Prefer `tailscale ssh` for both execution and file staging.
 In this environment, `tailscale ssh ... 'cat > remote-file' < local-file` is proven to work. Direct `scp` may fail on host-key setup. Only prefer `scp` if you have already confirmed it works in the current shell.
 
@@ -108,6 +113,7 @@ Local runtime files:
 - `log/remote_runs/experiments.md`
 
 Prepared runs write a record with `status=prepared`; `launch-prepared` reuses that record instead of restaging everything again.
+Prepared runs also snapshot the local configs into `configs/remote/review/<session>/` so the user has one obvious place to inspect them.
 
 If the user explicitly wants a custom remote command for smoke testing, use `--remote-command` only for a single-config launch.
 
@@ -125,6 +131,7 @@ bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch \
 Use one queue session name for recovery and record the ordered config list plus the per-config child sessions in the summary.
 
 If the user wants the terminal state preserved after completion, pass `--keep-finished-session`. This keeps finished `tmux` sessions available for manual inspection instead of letting them disappear immediately.
+When a prepared run is launched, the helper copies the checked configs from `review/` into `running/`; once the run reaches a terminal state, `status` moves that local snapshot into `completed/`.
 
 ### 4. Startup Monitoring
 
