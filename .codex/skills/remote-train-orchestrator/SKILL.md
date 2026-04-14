@@ -26,6 +26,8 @@ Always compare local and remote git heads before launch. If they differ, stop an
 3. Treat remote configs as disposable runtime inputs.
 Create or edit the local config under `configs/remote/` when needed, but do not rely on that directory being versioned. Stage the config to the remote repo under `configs/remote/` with a timestamped filename. Do not edit tracked remote configs in place.
 
+When the user wants a review checkpoint before execution, prefer the two-phase helper flow: `prepare` first, then `launch-prepared` only after the user confirms.
+
 4. Prefer `tailscale ssh` for both execution and file staging.
 In this environment, `tailscale ssh ... 'cat > remote-file' < local-file` is proven to work. Direct `scp` may fail on host-key setup. Only prefer `scp` if you have already confirmed it works in the current shell.
 
@@ -73,13 +75,24 @@ Guidelines:
 
 ### 3. Launch the Remote Run
 
-Use the helper:
+Fast path:
 
 ```bash
 bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch \
   --config configs/remote/<experiment>.py \
   --purpose "<why this run exists>" \
   --startup-seconds 20
+```
+
+Two-phase path when the user wants to inspect staged configs first:
+
+```bash
+bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh prepare \
+  --config configs/remote/<experiment>.py \
+  --purpose "<why this run exists>"
+
+bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch-prepared \
+  --session <prepared-session>
 ```
 
 Default launch behavior:
@@ -93,6 +106,8 @@ Default launch behavior:
 Local runtime files:
 - `log/remote_runs/records/<session>.json`
 - `log/remote_runs/experiments.md`
+
+Prepared runs write a record with `status=prepared`; `launch-prepared` reuses that record instead of restaging everything again.
 
 If the user explicitly wants a custom remote command for smoke testing, use `--remote-command` only for a single-config launch.
 
@@ -108,6 +123,8 @@ bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch \
 ```
 
 Use one queue session name for recovery and record the ordered config list plus the per-config child sessions in the summary.
+
+If the user wants the terminal state preserved after completion, pass `--keep-finished-session`. This keeps finished `tmux` sessions available for manual inspection instead of letting them disappear immediately.
 
 ### 4. Startup Monitoring
 
@@ -138,6 +155,7 @@ bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh status --se
 When the run is finished, `status` should be enough to recover:
 - whether the controller session is still alive
 - which child config session is currently active, if any
+- whether the run was only prepared and not launched yet
 - the latest pane tail
 - queue state tail
 - latest matching run directory
@@ -162,6 +180,7 @@ When reporting back to the main agent or the user:
 - Do not assume `configs/remote/` already exists locally; create it only when needed.
 - Do not assume dataset roots from local configs are valid on the remote host.
 - Do not assume helper scripts mentioned in old docs still exist; inspect the current repo before depending on them.
+- Do not treat `prepare` as launch; nothing should be running on the remote host until `launch-prepared` or direct `launch` is called.
 - Do not treat “launch baseline, then launch variant” as sequential execution; if both config sessions are alive at once on the same GPU, that is parallelism.
 - Do not open multiple config sessions on the same GPU for a comparison run unless the user explicitly asked for parallel execution.
 

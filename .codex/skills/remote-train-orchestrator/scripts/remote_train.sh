@@ -15,6 +15,7 @@ RETRIES="0"
 DELAY_SEC="5"
 STARTUP_SECONDS="15"
 ALLOW_VERSION_MISMATCH="0"
+KEEP_FINISHED_SESSION="0"
 REMOTE_COMMAND=""
 SESSION=""
 CONFIGS=()
@@ -150,6 +151,21 @@ json_field() {
 
 json_array_from_args() {
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1:], ensure_ascii=True))' "$@"
+}
+
+json_array_to_lines() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+try:
+    values = json.loads(raw) if raw else []
+except Exception:
+    values = []
+for value in values:
+    print(value)
+PY
 }
 
 record_path_for_session() {
@@ -362,6 +378,7 @@ optional_pairs = {
     "sequential_confirmed": os.environ.get("SEQUENTIAL_CONFIRMED", "") == "1",
     "sequential_confirmation": os.environ.get("SEQUENTIAL_CONFIRMATION", ""),
     "allow_version_mismatch": os.environ.get("ALLOW_VERSION_MISMATCH", "") == "1",
+    "keep_finished_session": os.environ.get("KEEP_FINISHED_SESSION", "") == "1",
 }
 for key, value in optional_pairs.items():
     if isinstance(value, bool):
@@ -407,7 +424,7 @@ for key in string_keys:
     print(f"{key.upper()}={shlex.quote(str(data.get(key, '')))}")
 
 bool_keys = [
-    "queue_mode", "startup_passed", "sequential_confirmed", "allow_version_mismatch",
+    "queue_mode", "startup_passed", "sequential_confirmed", "allow_version_mismatch", "keep_finished_session",
 ]
 for key in bool_keys:
     value = "1" if data.get(key, False) else "0"
@@ -426,7 +443,9 @@ usage() {
   cat <<'EOF'
 Usage:
   remote_train.sh inspect [--host HOST] [--remote-repo PATH]
+  remote_train.sh prepare --config PATH [--config PATH ...] --purpose TEXT [options]
   remote_train.sh launch --config PATH [--config PATH ...] --purpose TEXT [options]
+  remote_train.sh launch-prepared --session NAME [--startup-seconds N]
   remote_train.sh status --session NAME
 
 Options for launch:
@@ -440,6 +459,7 @@ Options for launch:
   --delay-sec N
   --startup-seconds N
   --allow-version-mismatch
+  --keep-finished-session
   --remote-command CMD
 EOF
 }
@@ -491,6 +511,10 @@ while [[ $# -gt 0 ]]; do
       ALLOW_VERSION_MISMATCH="1"
       shift
       ;;
+    --keep-finished-session)
+      KEEP_FINISHED_SESSION="1"
+      shift
+      ;;
     --remote-command)
       REMOTE_COMMAND="$2"
       shift 2
@@ -508,6 +532,344 @@ while [[ $# -gt 0 ]]; do
 done
 
 ensure_runtime_dirs
+
+collect_remote_context() {
+  LOCAL_BRANCH="$(local_git_branch)"
+  LOCAL_HEAD="$(local_git_head)"
+  LOCAL_STATUS="$(local_git_status)"
+  REMOTE_BRANCH="$(remote_git_branch)"
+  REMOTE_HEAD="$(remote_git_head)"
+  REMOTE_STATUS="$(remote_git_status)"
+  REMOTE_DATA_LINK="$(remote_data_link)"
+  TMUX_PATH="$(remote_tmux_path)"
+}
+
+assert_version_match() {
+  if [[ "${LOCAL_HEAD}" != "${REMOTE_HEAD}" && "${ALLOW_VERSION_MISMATCH}" != "1" ]]; then
+    echo "Local and remote git heads differ." >&2
+    echo "local=${LOCAL_HEAD}" >&2
+    echo "remote=${REMOTE_HEAD}" >&2
+    echo "Use --allow-version-mismatch only for smoke tests or after user confirmation." >&2
+    exit 3
+  fi
+}
+
+build_launch_artifacts() {
+  [[ "${#CONFIGS[@]}" -gt 0 ]] || { echo "At least one --config is required" >&2; exit 2; }
+  [[ -n "${PURPOSE}" ]] || { echo "--purpose is required" >&2; exit 2; }
+  for cfg in "${CONFIGS[@]}"; do
+    [[ -f "${cfg}" ]] || { echo "Config not found: ${cfg}" >&2; exit 2; }
+  done
+
+  collect_remote_context
+  assert_version_match
+
+  if [[ "${#CONFIGS[@]}" -gt 1 && -n "${REMOTE_COMMAND}" ]]; then
+    echo "--remote-command is only supported for single-config launch" >&2
+    exit 2
+  fi
+
+  QUEUE_STAMP="$(now_compact)"
+  CONFIG_LOCAL_LIST=()
+  CONFIG_REMOTE_LIST=()
+  TASK_LIST=()
+  NAME_LIST=()
+  MESSAGE_LIST=()
+  CHILD_SESSION_LIST=()
+
+  for cfg in "${CONFIGS[@]}"; do
+    CONFIG_LOCAL="$(cd "$(dirname "${cfg}")" && pwd)/$(basename "${cfg}")"
+    METADATA_JSON="$(parse_metadata_json "${CONFIG_LOCAL}")"
+    TASK="$(json_field task <<<"${METADATA_JSON}")"
+    NAME="$(json_field name <<<"${METADATA_JSON}")"
+    MESSAGE="$(json_field message <<<"${METADATA_JSON}")"
+    CONFIG_REMOTE="${REMOTE_CONFIG_DIR%/}/$(basename "${CONFIG_LOCAL%.py}")__${QUEUE_STAMP}.py"
+    CHILD_SESSION="$(build_session_name "stf-" "${TASK}" "${NAME}" "${QUEUE_STAMP}")"
+    CONFIG_LOCAL_LIST+=("${CONFIG_LOCAL}")
+    CONFIG_REMOTE_LIST+=("${CONFIG_REMOTE}")
+    TASK_LIST+=("${TASK}")
+    NAME_LIST+=("${NAME}")
+    MESSAGE_LIST+=("${MESSAGE}")
+    CHILD_SESSION_LIST+=("${CHILD_SESSION}")
+  done
+
+  CONFIG_LOCAL="${CONFIG_LOCAL_LIST[0]}"
+  CONFIG_REMOTE="${CONFIG_REMOTE_LIST[0]}"
+  TASK="${TASK_LIST[0]}"
+  NAME="${NAME_LIST[0]}"
+  MESSAGE="${MESSAGE_LIST[0]}"
+
+  LAST_INDEX="$((${#NAME_LIST[@]} - 1))"
+  if [[ -z "${SESSION}" ]]; then
+    if [[ "${#CONFIGS[@]}" -eq 1 ]]; then
+      SESSION="${CHILD_SESSION_LIST[0]}"
+    else
+      SESSION="$(build_queue_session_name "${NAME_LIST[0]}" "${NAME_LIST[$LAST_INDEX]}" "${QUEUE_STAMP}")"
+    fi
+  fi
+
+  STATE_TRACK_FILE="${REMOTE_REPO}/log/remote_runs/${SESSION}.state"
+  CONTROLLER_SESSION="${SESSION}"
+  QUEUE_MODE="0"
+  STARTUP_PASSED="0"
+  SEQUENTIAL_CONFIRMED="0"
+  SEQUENTIAL_CONFIRMATION=""
+  ACTIVE_SESSION=""
+  QUEUE_STATE_FILE=""
+  CONFIG_LOCAL_LIST_JSON="$(json_array_from_args "${CONFIG_LOCAL_LIST[@]}")"
+  CONFIG_REMOTE_LIST_JSON="$(json_array_from_args "${CONFIG_REMOTE_LIST[@]}")"
+  SESSION_LIST_JSON="$(json_array_from_args "${CHILD_SESSION_LIST[@]}")"
+
+  if session_exists_name "${SESSION}"; then
+    echo "tmux session already exists: ${SESSION}" >&2
+    exit 4
+  fi
+  for child_session in "${CHILD_SESSION_LIST[@]}"; do
+    if session_exists_name "${child_session}"; then
+      echo "tmux session already exists: ${child_session}" >&2
+      exit 4
+    fi
+  done
+
+  for idx in "${!CONFIG_LOCAL_LIST[@]}"; do
+    stage_file_to_remote "${CONFIG_LOCAL_LIST[$idx]}" "${CONFIG_REMOTE_LIST[$idx]}"
+  done
+
+  if [[ "${#CONFIGS[@]}" -eq 1 ]]; then
+    if [[ -n "${REMOTE_COMMAND}" ]]; then
+      REMOTE_COMMAND_VALUE="${REMOTE_COMMAND}"
+    else
+      REMOTE_COMMAND_VALUE="cd $(printf '%q' "${REMOTE_REPO}") && mkdir -p log/remote_runs && ./tools/train_queue.sh --config $(printf '%q' "${CONFIG_REMOTE}") --gpu $(printf '%q' "${GPU}") --retries $(printf '%q' "${RETRIES}") --delay-sec $(printf '%q' "${DELAY_SEC}") --state-file $(printf '%q' "${STATE_TRACK_FILE}")"
+    fi
+  else
+    QUEUE_MODE="1"
+    QUEUE_STATE_FILE="${REMOTE_REPO}/log/remote_runs/${SESSION}.queue.state"
+    CONTROLLER_SCRIPT_REMOTE="${REMOTE_REPO}/log/remote_runs/${SESSION}.controller.sh"
+    CONTROLLER_SCRIPT_LOCAL="$(mktemp)"
+
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf 'set -euo pipefail\n'
+      printf 'REMOTE_REPO=%q\n' "${REMOTE_REPO}"
+      printf 'GPU=%q\n' "${GPU}"
+      printf 'RETRIES=%q\n' "${RETRIES}"
+      printf 'DELAY_SEC=%q\n' "${DELAY_SEC}"
+      printf 'KEEP_FINISHED_SESSION=%q\n' "${KEEP_FINISHED_SESSION}"
+      printf 'QUEUE_STATE_FILE=%q\n' "${QUEUE_STATE_FILE}"
+      printf 'mkdir -p %q %q\n' "${REMOTE_REPO}/log/remote_runs" "${REMOTE_REPO}/log/train_queue"
+      printf ': > %q\n' "${QUEUE_STATE_FILE}"
+      printf 'CONFIGS=(\n'
+      for item in "${CONFIG_REMOTE_LIST[@]}"; do
+        printf '  %q\n' "${item}"
+      done
+      printf ')\n'
+      printf 'TASKS=(\n'
+      for item in "${TASK_LIST[@]}"; do
+        printf '  %q\n' "${item}"
+      done
+      printf ')\n'
+      printf 'NAMES=(\n'
+      for item in "${NAME_LIST[@]}"; do
+        printf '  %q\n' "${item}"
+      done
+      printf ')\n'
+      printf 'SESSIONS=(\n'
+      for item in "${CHILD_SESSION_LIST[@]}"; do
+        printf '  %q\n' "${item}"
+      done
+      printf ')\n'
+      cat <<'EOF'
+for idx in "${!CONFIGS[@]}"; do
+  printf 'PENDING|%s|%s|%s|%s|%s\n' \
+    "$idx" "${SESSIONS[$idx]}" "${CONFIGS[$idx]}" "${TASKS[$idx]}" "${NAMES[$idx]}" >>"${QUEUE_STATE_FILE}"
+done
+
+queue_exit=0
+for idx in "${!CONFIGS[@]}"; do
+  child_config="${CONFIGS[$idx]}"
+  child_task="${TASKS[$idx]}"
+  child_name="${NAMES[$idx]}"
+  child_session="${SESSIONS[$idx]}"
+  child_state_file="${REMOTE_REPO}/log/remote_runs/${child_session}.state"
+  child_exit_file="${REMOTE_REPO}/log/remote_runs/${child_session}.exit"
+
+  rm -f "${child_exit_file}" "${child_state_file}"
+  printf 'RUNNING|%s|%s|%s|%s|%s|state_file=%s\n' \
+    "$idx" "${child_session}" "${child_config}" "${child_task}" "${child_name}" "${child_state_file}" >>"${QUEUE_STATE_FILE}"
+
+  child_command="cd ${REMOTE_REPO} && mkdir -p log/remote_runs && ./tools/train_queue.sh --config ${child_config} --gpu ${GPU} --retries ${RETRIES} --delay-sec ${DELAY_SEC} --state-file ${child_state_file}; exit_code=\$?; printf '%s\n' \"\${exit_code}\" > ${child_exit_file}; exit \"\${exit_code}\""
+  tmux new-session -d -s "${child_session}" bash -lc "${child_command}"
+  if [[ "${KEEP_FINISHED_SESSION}" == "1" ]]; then
+    tmux set-option -t "${child_session}" remain-on-exit on >/dev/null
+  fi
+
+  while true; do
+    if [[ -f "${child_exit_file}" ]]; then
+      break
+    fi
+    if ! tmux has-session -t "${child_session}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 5
+  done
+
+  child_exit_code="1"
+  if [[ -f "${child_exit_file}" ]]; then
+    child_exit_code="$(cat "${child_exit_file}")"
+  fi
+  child_run_dir="$(find -L "${REMOTE_REPO}/runs/${child_task}" -maxdepth 1 -mindepth 1 -type d -name "${child_name}_*" 2>/dev/null | sort | tail -n 1)"
+  printf 'DONE|%s|%s|%s|%s|%s|exit=%s|run_dir=%s|state_file=%s\n' \
+    "$idx" "${child_session}" "${child_config}" "${child_task}" "${child_name}" "${child_exit_code}" "${child_run_dir}" "${child_state_file}" >>"${QUEUE_STATE_FILE}"
+  if [[ "${child_exit_code}" != "0" ]]; then
+    queue_exit=1
+  fi
+done
+
+printf 'QUEUE_DONE|exit=%s\n' "${queue_exit}" >>"${QUEUE_STATE_FILE}"
+exit "${queue_exit}"
+EOF
+    } >"${CONTROLLER_SCRIPT_LOCAL}"
+    chmod +x "${CONTROLLER_SCRIPT_LOCAL}"
+    stage_file_to_remote "${CONTROLLER_SCRIPT_LOCAL}" "${CONTROLLER_SCRIPT_REMOTE}"
+    rm -f "${CONTROLLER_SCRIPT_LOCAL}"
+
+    REMOTE_COMMAND_VALUE="cd $(printf '%q' "${REMOTE_REPO}") && bash $(printf '%q' "${CONTROLLER_SCRIPT_REMOTE}")"
+  fi
+}
+
+start_prepared_launch() {
+  if [[ "${QUEUE_MODE}" == "1" ]]; then
+    printf -v QUOTED_REMOTE_COMMAND '%q' "${REMOTE_COMMAND_VALUE}"
+    remote_exec "tmux new-session -d -s $(printf '%q' "${SESSION}") bash -lc ${QUOTED_REMOTE_COMMAND}"
+    if [[ "${KEEP_FINISHED_SESSION}" == "1" ]]; then
+      remote_exec "tmux set-option -t $(printf '%q' "${SESSION}") remain-on-exit on >/dev/null"
+    fi
+  else
+    printf -v QUOTED_REMOTE_COMMAND '%q' "${REMOTE_COMMAND_VALUE}"
+    remote_exec "tmux new-session -d -s $(printf '%q' "${SESSION}") bash -lc ${QUOTED_REMOTE_COMMAND}"
+    if [[ "${KEEP_FINISHED_SESSION}" == "1" ]]; then
+      remote_exec "tmux set-option -t $(printf '%q' "${SESSION}") remain-on-exit on >/dev/null"
+    fi
+  fi
+}
+
+write_runtime_record() {
+  local ledger_action="$1"
+
+  if [[ "${STARTUP_SECONDS}" =~ ^[0-9]+$ ]] && [[ "${STARTUP_SECONDS}" -gt 0 ]]; then
+    sleep "${STARTUP_SECONDS}"
+  fi
+
+  STATUS="exited-early"
+  PANE_FILE="$(mktemp)"
+  STATE_FILE_TMP="$(mktemp)"
+  LATEST_RUN_DIR=""
+
+  if [[ "${QUEUE_MODE}" == "1" ]]; then
+    remote_capture "cat $(printf '%q' "${QUEUE_STATE_FILE}") 2>/dev/null" >"${STATE_FILE_TMP}"
+    eval "$(load_queue_state_env "${STATE_FILE_TMP}")"
+    ACTIVE_SESSION="${QUEUE_CURRENT_SESSION:-}"
+    if [[ "${QUEUE_DONE_EXIT:-}" == "0" ]]; then
+      STATUS="completed"
+    elif [[ -n "${QUEUE_DONE_EXIT:-}" ]]; then
+      STATUS="failed"
+    elif session_exists_name "${SESSION}"; then
+      STATUS="running"
+      if [[ -n "${ACTIVE_SESSION}" ]] && session_exists_name "${ACTIVE_SESSION}"; then
+        capture_session_pane_to_file "${ACTIVE_SESSION}" "${PANE_FILE}"
+        STARTUP_PASSED="1"
+        SEQUENTIAL_CONFIRMED="1"
+        SEQUENTIAL_CONFIRMATION="Active config session ${ACTIVE_SESSION} is running while later configs remain queued behind controller ${SESSION}."
+      else
+        capture_session_pane_to_file "${SESSION}" "${PANE_FILE}"
+      fi
+    fi
+  else
+    if session_exists; then
+      STATUS="running"
+      capture_pane_to_file "${PANE_FILE}"
+      STARTUP_PASSED="1"
+    fi
+    capture_state_to_file "${STATE_FILE_TMP}"
+    if grep -q '^OK|' "${STATE_FILE_TMP}" 2>/dev/null; then
+      STATUS="completed"
+    elif grep -Eq '^(FAIL|MISS)\|' "${STATE_FILE_TMP}" 2>/dev/null; then
+      STATUS="failed"
+    fi
+  fi
+
+  CREATED_AT="${CREATED_AT:-$(now_ts)}"
+  UPDATED_AT="$(now_ts)"
+  RECORD_PATH="$(record_path_for_session "${SESSION}")"
+  export CREATED_AT UPDATED_AT STATUS HOST REMOTE_REPO REMOTE_CONFIG_DIR LOCAL_BRANCH LOCAL_HEAD LOCAL_STATUS REMOTE_BRANCH REMOTE_HEAD REMOTE_STATUS REMOTE_DATA_LINK TMUX_PATH SESSION PURPOSE CONFIG_LOCAL CONFIG_REMOTE TASK NAME MESSAGE GPU RETRIES DELAY_SEC STARTUP_SECONDS STATE_TRACK_FILE REMOTE_COMMAND_VALUE QUEUE_MODE CONTROLLER_SESSION ACTIVE_SESSION QUEUE_STATE_FILE STARTUP_PASSED SEQUENTIAL_CONFIRMED SEQUENTIAL_CONFIRMATION ALLOW_VERSION_MISMATCH KEEP_FINISHED_SESSION CONFIG_LOCAL_LIST_JSON CONFIG_REMOTE_LIST_JSON SESSION_LIST_JSON
+  write_record "${RECORD_PATH}" "${PANE_FILE}" "${STATE_FILE_TMP}" "${LATEST_RUN_DIR}"
+  if [[ "${QUEUE_MODE}" == "1" ]]; then
+    append_ledger \
+      "${ledger_action} | session \`${SESSION}\`" \
+      "purpose: ${PURPOSE}" \
+      "local_head: ${LOCAL_HEAD}" \
+      "remote_head: ${REMOTE_HEAD}" \
+      "config_local_list: ${CONFIG_LOCAL_LIST[*]}" \
+      "config_remote_list: ${CONFIG_REMOTE_LIST[*]}" \
+      "child_sessions: ${CHILD_SESSION_LIST[*]}" \
+      "record: ${RECORD_PATH}" \
+      "startup_status: ${STATUS}" \
+      "startup_passed: ${STARTUP_PASSED}" \
+      "sequential_confirmed: ${SEQUENTIAL_CONFIRMED}" \
+      "keep_finished_session: ${KEEP_FINISHED_SESSION}"
+  else
+    append_ledger \
+      "${ledger_action} | session \`${SESSION}\`" \
+      "purpose: ${PURPOSE}" \
+      "local_head: ${LOCAL_HEAD}" \
+      "remote_head: ${REMOTE_HEAD}" \
+      "config_local: ${CONFIG_LOCAL}" \
+      "config_remote: ${CONFIG_REMOTE}" \
+      "task/name: ${TASK} / ${NAME}" \
+      "record: ${RECORD_PATH}" \
+      "startup_status: ${STATUS}" \
+      "keep_finished_session: ${KEEP_FINISHED_SESSION}"
+  fi
+  rm -f "${PANE_FILE}" "${STATE_FILE_TMP}"
+
+  if [[ "${STATUS}" != "running" && -z "${REMOTE_COMMAND}" ]]; then
+    exit 1
+  fi
+}
+
+write_prepared_record() {
+  STATUS="prepared"
+  STARTUP_PASSED="0"
+  ACTIVE_SESSION=""
+  SEQUENTIAL_CONFIRMED="0"
+  CREATED_AT="$(now_ts)"
+  UPDATED_AT="${CREATED_AT}"
+  PANE_FILE="$(mktemp)"
+  STATE_FILE_TMP="$(mktemp)"
+  RECORD_PATH="$(record_path_for_session "${SESSION}")"
+  export CREATED_AT UPDATED_AT STATUS HOST REMOTE_REPO REMOTE_CONFIG_DIR LOCAL_BRANCH LOCAL_HEAD LOCAL_STATUS REMOTE_BRANCH REMOTE_HEAD REMOTE_STATUS REMOTE_DATA_LINK TMUX_PATH SESSION PURPOSE CONFIG_LOCAL CONFIG_REMOTE TASK NAME MESSAGE GPU RETRIES DELAY_SEC STARTUP_SECONDS STATE_TRACK_FILE REMOTE_COMMAND_VALUE QUEUE_MODE CONTROLLER_SESSION ACTIVE_SESSION QUEUE_STATE_FILE STARTUP_PASSED SEQUENTIAL_CONFIRMED SEQUENTIAL_CONFIRMATION ALLOW_VERSION_MISMATCH KEEP_FINISHED_SESSION CONFIG_LOCAL_LIST_JSON CONFIG_REMOTE_LIST_JSON SESSION_LIST_JSON
+  write_record "${RECORD_PATH}" "${PANE_FILE}" "${STATE_FILE_TMP}"
+  if [[ "${QUEUE_MODE}" == "1" ]]; then
+    append_ledger \
+      "prepare | session \`${SESSION}\`" \
+      "purpose: ${PURPOSE}" \
+      "config_local_list: ${CONFIG_LOCAL_LIST[*]}" \
+      "config_remote_list: ${CONFIG_REMOTE_LIST[*]}" \
+      "child_sessions: ${CHILD_SESSION_LIST[*]}" \
+      "record: ${RECORD_PATH}" \
+      "keep_finished_session: ${KEEP_FINISHED_SESSION}"
+  else
+    append_ledger \
+      "prepare | session \`${SESSION}\`" \
+      "purpose: ${PURPOSE}" \
+      "config_local: ${CONFIG_LOCAL}" \
+      "config_remote: ${CONFIG_REMOTE}" \
+      "task/name: ${TASK} / ${NAME}" \
+      "record: ${RECORD_PATH}" \
+      "keep_finished_session: ${KEEP_FINISHED_SESSION}"
+  fi
+  rm -f "${PANE_FILE}" "${STATE_FILE_TMP}"
+}
 
 case "${COMMAND}" in
   inspect)
@@ -547,265 +909,49 @@ print(json.dumps({
 PY
     ;;
 
+  prepare)
+    build_launch_artifacts
+    write_prepared_record
+    ;;
+
   launch)
-    [[ "${#CONFIGS[@]}" -gt 0 ]] || { echo "At least one --config is required" >&2; exit 2; }
-    [[ -n "${PURPOSE}" ]] || { echo "--purpose is required" >&2; exit 2; }
-    for cfg in "${CONFIGS[@]}"; do
-      [[ -f "${cfg}" ]] || { echo "Config not found: ${cfg}" >&2; exit 2; }
-    done
+    build_launch_artifacts
+    start_prepared_launch
+    write_runtime_record "launch"
+    ;;
 
-    LOCAL_BRANCH="$(local_git_branch)"
-    LOCAL_HEAD="$(local_git_head)"
-    LOCAL_STATUS="$(local_git_status)"
-    REMOTE_BRANCH="$(remote_git_branch)"
-    REMOTE_HEAD="$(remote_git_head)"
-    REMOTE_STATUS="$(remote_git_status)"
-    REMOTE_DATA_LINK="$(remote_data_link)"
-    TMUX_PATH="$(remote_tmux_path)"
+  launch-prepared)
+    [[ -n "${SESSION}" ]] || { echo "--session is required" >&2; exit 2; }
+    RECORD_PATH="$(record_path_for_session "${SESSION}")"
+    [[ -f "${RECORD_PATH}" ]] || { echo "Record not found: ${RECORD_PATH}" >&2; exit 2; }
+    eval "$(load_record_env "${RECORD_PATH}")"
+    [[ "${STATUS}" == "prepared" ]] || { echo "Record is not in prepared state: ${RECORD_PATH}" >&2; exit 2; }
 
-    if [[ "${LOCAL_HEAD}" != "${REMOTE_HEAD}" && "${ALLOW_VERSION_MISMATCH}" != "1" ]]; then
-      echo "Local and remote git heads differ." >&2
-      echo "local=${LOCAL_HEAD}" >&2
-      echo "remote=${REMOTE_HEAD}" >&2
-      echo "Use --allow-version-mismatch only for smoke tests or after user confirmation." >&2
-      exit 3
-    fi
-
-    if [[ "${#CONFIGS[@]}" -gt 1 && -n "${REMOTE_COMMAND}" ]]; then
-      echo "--remote-command is only supported for single-config launch" >&2
-      exit 2
-    fi
-
-    QUEUE_STAMP="$(now_compact)"
-    CONFIG_LOCAL_LIST=()
-    CONFIG_REMOTE_LIST=()
-    TASK_LIST=()
-    NAME_LIST=()
-    MESSAGE_LIST=()
-    CHILD_SESSION_LIST=()
-
-    for cfg in "${CONFIGS[@]}"; do
-      CONFIG_LOCAL="$(cd "$(dirname "${cfg}")" && pwd)/$(basename "${cfg}")"
-      METADATA_JSON="$(parse_metadata_json "${CONFIG_LOCAL}")"
-      TASK="$(json_field task <<<"${METADATA_JSON}")"
-      NAME="$(json_field name <<<"${METADATA_JSON}")"
-      MESSAGE="$(json_field message <<<"${METADATA_JSON}")"
-      CONFIG_REMOTE="${REMOTE_CONFIG_DIR%/}/$(basename "${CONFIG_LOCAL%.py}")__${QUEUE_STAMP}.py"
-      CHILD_SESSION="$(build_session_name "stf-" "${TASK}" "${NAME}" "${QUEUE_STAMP}")"
-      CONFIG_LOCAL_LIST+=("${CONFIG_LOCAL}")
-      CONFIG_REMOTE_LIST+=("${CONFIG_REMOTE}")
-      TASK_LIST+=("${TASK}")
-      NAME_LIST+=("${NAME}")
-      MESSAGE_LIST+=("${MESSAGE}")
-      CHILD_SESSION_LIST+=("${CHILD_SESSION}")
-    done
-
-    CONFIG_LOCAL="${CONFIG_LOCAL_LIST[0]}"
-    CONFIG_REMOTE="${CONFIG_REMOTE_LIST[0]}"
-    TASK="${TASK_LIST[0]}"
-    NAME="${NAME_LIST[0]}"
-    MESSAGE="${MESSAGE_LIST[0]}"
-
-    LAST_INDEX="$((${#NAME_LIST[@]} - 1))"
-    if [[ -z "${SESSION}" ]]; then
-      if [[ "${#CONFIGS[@]}" -eq 1 ]]; then
-        SESSION="${CHILD_SESSION_LIST[0]}"
-      else
-        SESSION="$(build_queue_session_name "${NAME_LIST[0]}" "${NAME_LIST[$LAST_INDEX]}" "${QUEUE_STAMP}")"
-      fi
-    fi
-
-    STATE_TRACK_FILE="${REMOTE_REPO}/log/remote_runs/${SESSION}.state"
-    CONTROLLER_SESSION="${SESSION}"
-    QUEUE_MODE="0"
+    HOST="${HOST:-${DEFAULT_HOST}}"
+    REMOTE_REPO="${REMOTE_REPO:-${DEFAULT_REMOTE_REPO}}"
+    REMOTE_CONFIG_DIR="${REMOTE_CONFIG_DIR:-${DEFAULT_REMOTE_REPO}/configs/remote}"
+    CONTROLLER_SESSION="${CONTROLLER_SESSION:-${SESSION}}"
     STARTUP_PASSED="0"
-    SEQUENTIAL_CONFIRMED="0"
-    SEQUENTIAL_CONFIRMATION=""
     ACTIVE_SESSION=""
-    QUEUE_STATE_FILE=""
-    CONFIG_LOCAL_LIST_JSON="$(json_array_from_args "${CONFIG_LOCAL_LIST[@]}")"
-    CONFIG_REMOTE_LIST_JSON="$(json_array_from_args "${CONFIG_REMOTE_LIST[@]}")"
-    SESSION_LIST_JSON="$(json_array_from_args "${CHILD_SESSION_LIST[@]}")"
+    SEQUENTIAL_CONFIRMED="0"
+
+    mapfile -t CONFIG_LOCAL_LIST < <(json_array_to_lines "${CONFIG_LOCAL_LIST_JSON:-[]}")
+    mapfile -t CONFIG_REMOTE_LIST < <(json_array_to_lines "${CONFIG_REMOTE_LIST_JSON:-[]}")
+    mapfile -t CHILD_SESSION_LIST < <(json_array_to_lines "${SESSION_LIST_JSON:-[]}")
 
     if session_exists_name "${SESSION}"; then
       echo "tmux session already exists: ${SESSION}" >&2
       exit 4
     fi
     for child_session in "${CHILD_SESSION_LIST[@]}"; do
-      if session_exists_name "${child_session}"; then
+      if [[ -n "${child_session}" ]] && session_exists_name "${child_session}"; then
         echo "tmux session already exists: ${child_session}" >&2
         exit 4
       fi
     done
 
-    for idx in "${!CONFIG_LOCAL_LIST[@]}"; do
-      stage_file_to_remote "${CONFIG_LOCAL_LIST[$idx]}" "${CONFIG_REMOTE_LIST[$idx]}"
-    done
-
-    if [[ "${#CONFIGS[@]}" -eq 1 ]]; then
-      if [[ -n "${REMOTE_COMMAND}" ]]; then
-        REMOTE_COMMAND_VALUE="${REMOTE_COMMAND}"
-      else
-        REMOTE_COMMAND_VALUE="cd $(printf '%q' "${REMOTE_REPO}") && mkdir -p log/remote_runs && ./tools/train_queue.sh --config $(printf '%q' "${CONFIG_REMOTE}") --gpu $(printf '%q' "${GPU}") --retries $(printf '%q' "${RETRIES}") --delay-sec $(printf '%q' "${DELAY_SEC}") --state-file $(printf '%q' "${STATE_TRACK_FILE}")"
-      fi
-
-      printf -v QUOTED_REMOTE_COMMAND '%q' "${REMOTE_COMMAND_VALUE}"
-      remote_exec "tmux new-session -d -s $(printf '%q' "${SESSION}") bash -lc ${QUOTED_REMOTE_COMMAND}"
-    else
-      QUEUE_MODE="1"
-      QUEUE_STATE_FILE="${REMOTE_REPO}/log/remote_runs/${SESSION}.queue.state"
-      CONTROLLER_SCRIPT_REMOTE="${REMOTE_REPO}/log/remote_runs/${SESSION}.controller.sh"
-      CONTROLLER_SCRIPT_LOCAL="$(mktemp)"
-
-      {
-        printf '#!/usr/bin/env bash\n'
-        printf 'set -euo pipefail\n'
-        printf 'REMOTE_REPO=%q\n' "${REMOTE_REPO}"
-        printf 'GPU=%q\n' "${GPU}"
-        printf 'RETRIES=%q\n' "${RETRIES}"
-        printf 'DELAY_SEC=%q\n' "${DELAY_SEC}"
-        printf 'QUEUE_STATE_FILE=%q\n' "${QUEUE_STATE_FILE}"
-        printf 'mkdir -p %q %q\n' "${REMOTE_REPO}/log/remote_runs" "${REMOTE_REPO}/log/train_queue"
-        printf ': > %q\n' "${QUEUE_STATE_FILE}"
-        printf 'CONFIGS=(\n'
-        for item in "${CONFIG_REMOTE_LIST[@]}"; do
-          printf '  %q\n' "${item}"
-        done
-        printf ')\n'
-        printf 'TASKS=(\n'
-        for item in "${TASK_LIST[@]}"; do
-          printf '  %q\n' "${item}"
-        done
-        printf ')\n'
-        printf 'NAMES=(\n'
-        for item in "${NAME_LIST[@]}"; do
-          printf '  %q\n' "${item}"
-        done
-        printf ')\n'
-        printf 'SESSIONS=(\n'
-        for item in "${CHILD_SESSION_LIST[@]}"; do
-          printf '  %q\n' "${item}"
-        done
-        printf ')\n'
-        cat <<'EOF'
-for idx in "${!CONFIGS[@]}"; do
-  printf 'PENDING|%s|%s|%s|%s|%s\n' \
-    "$idx" "${SESSIONS[$idx]}" "${CONFIGS[$idx]}" "${TASKS[$idx]}" "${NAMES[$idx]}" >>"${QUEUE_STATE_FILE}"
-done
-
-queue_exit=0
-for idx in "${!CONFIGS[@]}"; do
-  child_config="${CONFIGS[$idx]}"
-  child_task="${TASKS[$idx]}"
-  child_name="${NAMES[$idx]}"
-  child_session="${SESSIONS[$idx]}"
-  child_state_file="${REMOTE_REPO}/log/remote_runs/${child_session}.state"
-  child_exit_file="${REMOTE_REPO}/log/remote_runs/${child_session}.exit"
-
-  rm -f "${child_exit_file}" "${child_state_file}"
-  printf 'RUNNING|%s|%s|%s|%s|%s|state_file=%s\n' \
-    "$idx" "${child_session}" "${child_config}" "${child_task}" "${child_name}" "${child_state_file}" >>"${QUEUE_STATE_FILE}"
-
-  child_command="cd ${REMOTE_REPO} && mkdir -p log/remote_runs && ./tools/train_queue.sh --config ${child_config} --gpu ${GPU} --retries ${RETRIES} --delay-sec ${DELAY_SEC} --state-file ${child_state_file}; exit_code=\$?; printf '%s\n' \"\${exit_code}\" > ${child_exit_file}; exit \"\${exit_code}\""
-  tmux new-session -d -s "${child_session}" bash -lc "${child_command}"
-
-  while tmux has-session -t "${child_session}" >/dev/null 2>&1; do
-    sleep 5
-  done
-
-  child_exit_code="1"
-  if [[ -f "${child_exit_file}" ]]; then
-    child_exit_code="$(cat "${child_exit_file}")"
-  fi
-  child_run_dir="$(find -L "${REMOTE_REPO}/runs/${child_task}" -maxdepth 1 -mindepth 1 -type d -name "${child_name}_*" 2>/dev/null | sort | tail -n 1)"
-  printf 'DONE|%s|%s|%s|%s|%s|exit=%s|run_dir=%s|state_file=%s\n' \
-    "$idx" "${child_session}" "${child_config}" "${child_task}" "${child_name}" "${child_exit_code}" "${child_run_dir}" "${child_state_file}" >>"${QUEUE_STATE_FILE}"
-  if [[ "${child_exit_code}" != "0" ]]; then
-    queue_exit=1
-  fi
-done
-
-printf 'QUEUE_DONE|exit=%s\n' "${queue_exit}" >>"${QUEUE_STATE_FILE}"
-exit "${queue_exit}"
-EOF
-      } >"${CONTROLLER_SCRIPT_LOCAL}"
-      chmod +x "${CONTROLLER_SCRIPT_LOCAL}"
-      stage_file_to_remote "${CONTROLLER_SCRIPT_LOCAL}" "${CONTROLLER_SCRIPT_REMOTE}"
-      rm -f "${CONTROLLER_SCRIPT_LOCAL}"
-
-      REMOTE_COMMAND_VALUE="cd $(printf '%q' "${REMOTE_REPO}") && bash $(printf '%q' "${CONTROLLER_SCRIPT_REMOTE}")"
-      printf -v QUOTED_REMOTE_COMMAND '%q' "${REMOTE_COMMAND_VALUE}"
-      remote_exec "tmux new-session -d -s $(printf '%q' "${SESSION}") bash -lc ${QUOTED_REMOTE_COMMAND}"
-    fi
-
-    if [[ "${STARTUP_SECONDS}" =~ ^[0-9]+$ ]] && [[ "${STARTUP_SECONDS}" -gt 0 ]]; then
-      sleep "${STARTUP_SECONDS}"
-    fi
-
-    STATUS="exited-early"
-    PANE_FILE="$(mktemp)"
-    STATE_FILE_TMP="$(mktemp)"
-    LATEST_RUN_DIR=""
-
-    if [[ "${QUEUE_MODE}" == "1" ]]; then
-      remote_capture "cat $(printf '%q' "${QUEUE_STATE_FILE}") 2>/dev/null" >"${STATE_FILE_TMP}"
-      eval "$(load_queue_state_env "${STATE_FILE_TMP}")"
-      ACTIVE_SESSION="${QUEUE_CURRENT_SESSION:-}"
-      if session_exists_name "${SESSION}"; then
-        STATUS="running"
-        if [[ -n "${ACTIVE_SESSION}" ]] && session_exists_name "${ACTIVE_SESSION}"; then
-          capture_session_pane_to_file "${ACTIVE_SESSION}" "${PANE_FILE}"
-          STARTUP_PASSED="1"
-          SEQUENTIAL_CONFIRMED="1"
-          SEQUENTIAL_CONFIRMATION="Active config session ${ACTIVE_SESSION} is running while later configs remain queued behind controller ${SESSION}."
-        else
-          capture_session_pane_to_file "${SESSION}" "${PANE_FILE}"
-        fi
-      fi
-    else
-      if session_exists; then
-        STATUS="running"
-        capture_pane_to_file "${PANE_FILE}"
-        STARTUP_PASSED="1"
-      fi
-      capture_state_to_file "${STATE_FILE_TMP}"
-    fi
-
-    CREATED_AT="$(now_ts)"
-    UPDATED_AT="${CREATED_AT}"
-    RECORD_PATH="$(record_path_for_session "${SESSION}")"
-    export CREATED_AT UPDATED_AT STATUS HOST REMOTE_REPO REMOTE_CONFIG_DIR LOCAL_BRANCH LOCAL_HEAD LOCAL_STATUS REMOTE_BRANCH REMOTE_HEAD REMOTE_STATUS REMOTE_DATA_LINK TMUX_PATH SESSION PURPOSE CONFIG_LOCAL CONFIG_REMOTE TASK NAME MESSAGE GPU RETRIES DELAY_SEC STARTUP_SECONDS STATE_TRACK_FILE REMOTE_COMMAND_VALUE QUEUE_MODE CONTROLLER_SESSION ACTIVE_SESSION QUEUE_STATE_FILE STARTUP_PASSED SEQUENTIAL_CONFIRMED SEQUENTIAL_CONFIRMATION ALLOW_VERSION_MISMATCH CONFIG_LOCAL_LIST_JSON CONFIG_REMOTE_LIST_JSON SESSION_LIST_JSON
-    write_record "${RECORD_PATH}" "${PANE_FILE}" "${STATE_FILE_TMP}" "${LATEST_RUN_DIR}"
-    if [[ "${QUEUE_MODE}" == "1" ]]; then
-      append_ledger \
-        "launch | session \`${SESSION}\`" \
-        "purpose: ${PURPOSE}" \
-        "local_head: ${LOCAL_HEAD}" \
-        "remote_head: ${REMOTE_HEAD}" \
-        "config_local_list: ${CONFIG_LOCAL_LIST[*]}" \
-        "config_remote_list: ${CONFIG_REMOTE_LIST[*]}" \
-        "child_sessions: ${CHILD_SESSION_LIST[*]}" \
-        "record: ${RECORD_PATH}" \
-        "startup_status: ${STATUS}" \
-        "startup_passed: ${STARTUP_PASSED}" \
-        "sequential_confirmed: ${SEQUENTIAL_CONFIRMED}"
-    else
-      append_ledger \
-        "launch | session \`${SESSION}\`" \
-        "purpose: ${PURPOSE}" \
-        "local_head: ${LOCAL_HEAD}" \
-        "remote_head: ${REMOTE_HEAD}" \
-        "config_local: ${CONFIG_LOCAL}" \
-        "config_remote: ${CONFIG_REMOTE}" \
-        "task/name: ${TASK} / ${NAME}" \
-        "record: ${RECORD_PATH}" \
-        "startup_status: ${STATUS}"
-    fi
-    rm -f "${PANE_FILE}" "${STATE_FILE_TMP}"
-
-    if [[ "${STATUS}" != "running" && -z "${REMOTE_COMMAND}" ]]; then
-      exit 1
-    fi
+    start_prepared_launch
+    write_runtime_record "launch-prepared"
     ;;
 
   status)
@@ -813,6 +959,23 @@ EOF
     RECORD_PATH="$(record_path_for_session "${SESSION}")"
     [[ -f "${RECORD_PATH}" ]] || { echo "Record not found: ${RECORD_PATH}" >&2; exit 2; }
     eval "$(load_record_env "${RECORD_PATH}")"
+
+    if [[ "${STATUS}" == "prepared" ]]; then
+      UPDATED_AT="$(now_ts)"
+      PANE_FILE="$(mktemp)"
+      STATE_FILE_TMP="$(mktemp)"
+      export CREATED_AT UPDATED_AT STATUS HOST REMOTE_REPO REMOTE_CONFIG_DIR LOCAL_BRANCH LOCAL_HEAD LOCAL_STATUS REMOTE_BRANCH REMOTE_HEAD REMOTE_STATUS REMOTE_DATA_LINK TMUX_PATH SESSION PURPOSE CONFIG_LOCAL CONFIG_REMOTE TASK NAME MESSAGE GPU RETRIES DELAY_SEC STARTUP_SECONDS STATE_TRACK_FILE REMOTE_COMMAND_VALUE QUEUE_MODE CONTROLLER_SESSION ACTIVE_SESSION QUEUE_STATE_FILE STARTUP_PASSED SEQUENTIAL_CONFIRMED SEQUENTIAL_CONFIRMATION ALLOW_VERSION_MISMATCH KEEP_FINISHED_SESSION CONFIG_LOCAL_LIST_JSON CONFIG_REMOTE_LIST_JSON SESSION_LIST_JSON
+      write_record "${RECORD_PATH}" "${PANE_FILE}" "${STATE_FILE_TMP}"
+      append_ledger \
+        "status | session \`${SESSION}\`" \
+        "status: prepared" \
+        "record: ${RECORD_PATH}" \
+        "latest_run_dir: '(not started)'" \
+        "final_val: '(not started)'" \
+        "gpu_summary: '(not started)'"
+      rm -f "${PANE_FILE}" "${STATE_FILE_TMP}"
+      exit 0
+    fi
 
     HOST="${HOST:-${DEFAULT_HOST}}"
     REMOTE_REPO="${REMOTE_REPO:-${DEFAULT_REMOTE_REPO}}"

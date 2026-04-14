@@ -535,6 +535,24 @@
 - 验证:
   - `bash -n .codex/skills/remote-train-orchestrator/scripts/remote_train.sh`
 
+补充（2026-04-14 20:00:00 +0800）| 远程 helper 增加 `prepare/launch-prepared` 与保留完成 session:
+- 背景/目标:
+  - 用户希望在真正发车前先停在 staging 阶段，手动检查或微调，再让 agent 执行。
+  - 用户还希望训练结束后不要立刻丢失 `tmux` 现场，便于人工复核最后输出。
+- 实现与代码改动:
+  - `remote_train.sh` 新增:
+    - `prepare --config ... --purpose ...`
+    - `launch-prepared --session ...`
+  - `prepare` 只做 preflight/staging/record，不启动任何远程训练 session。
+  - `launch-prepared` 从 `records/<session>.json` 恢复已准备的远程命令与 staged config 列表，再真正启动。
+  - 新增 `--keep-finished-session`:
+    - 单 config session 可保留；
+    - 多 config compare 中的 controller / child session 可保留；
+    - helper 等待逻辑从“session 消失”改为“exit file 出现或 session 已退出”，避免 `remain-on-exit` 卡住串行队列。
+- 影响:
+  - 远程执行更适合“先准备、后确认、再执行”的协作节奏。
+  - 结束后的 `tmux` pane 可被用户手动检查，不再必须依赖日志文件回溯。
+
 ### 回传模板（建议）
 
 - 时间:

@@ -84,6 +84,8 @@
   - 训练前强制检查本地/远程 git head 是否一致。
   - 远程运行使用命名 `tmux session`，避免本地休眠导致任务丢失。
   - 多配置对比任务由 helper 串行编排：每个 config 各自拥有命名 `tmux session`，但同一条 compare queue 任意时刻只允许一个 config session 运行。
+  - 支持两阶段工作流：`prepare` 只做 staging 与记录，`launch-prepared` 在确认后再真正启动。
+  - 支持 `--keep-finished-session`，便于训练结束后保留 tmux 现场供人工检查。
   - 主线程上下文只保留摘要，长日志留在远程和本地记录文件中。
 - 本地记录约定:
   - 运行状态记录: `log/remote_runs/records/<session>.json`
@@ -101,8 +103,10 @@
   - CIA serialized: `data/CIA/band4_serialized`
 - 当前推荐调用:
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh inspect`
+  - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh prepare --config ... --purpose ...`
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch --config ... --purpose ...`
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch --config ... --config ... --purpose ...`（对比任务：顺序执行，每个 config 单独 tmux session）
+  - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch-prepared --session ...`
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh status --session ...`
 
 ## 3.2 `fine_t1` warmup 严格配对复核（2026-04-01）
