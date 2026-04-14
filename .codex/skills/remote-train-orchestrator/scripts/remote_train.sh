@@ -707,8 +707,7 @@ for idx in "${!CONFIGS[@]}"; do
     "$idx" "${child_session}" "${child_config}" "${child_task}" "${child_name}" "${child_state_file}" >>"${QUEUE_STATE_FILE}"
 
   child_command="cd ${REMOTE_REPO} && mkdir -p log/remote_runs && ./tools/train_queue.sh --config ${child_config} --gpu ${GPU} --retries ${RETRIES} --delay-sec ${DELAY_SEC} --state-file ${child_state_file}; exit_code=\$?; printf '%s\n' \"\${exit_code}\" > ${child_exit_file}; exit \"\${exit_code}\""
-  printf -v quoted_child_command '%q' "${child_command}"
-  tmux new-session -d -s "${child_session}" bash -lc "${quoted_child_command}"
+  tmux new-session -d -s "${child_session}" bash -lc "${child_command}"
 
   while tmux has-session -t "${child_session}" >/dev/null 2>&1; do
     sleep 5
