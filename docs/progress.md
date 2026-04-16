@@ -1,7 +1,7 @@
 # STF 项目进展记录
 
-最后更新: 2026-04-13 11:10:00 +0800  
-当前分支: `feat/repo-private-remote-run-skill`
+最后更新: 2026-04-16 16:45:50 +0800  
+当前分支: `master`
 
 ## 1. 文档用途
 
@@ -421,6 +421,59 @@
     - 可基于 config + sampler + epoch 导出批次相对位置到 `runs/debug/*.csv`（无需加载图像张量）。
 - 结果:
   - 可直接将异常波动的 `val_step` 映射到具体批次位置与样本 key，区分“难样本分布”与“训练数值异常”。
+
+### 新增回传（2026-04-16 16:45:50 +0800）| `ResidualGaussianFlowMatching` 对历史 Gaussian baseline
+
+实验:
+- 历史 Gaussian baseline: `runs/flow/change_aware_fine_t1_baseline_matched_cia_20260331-173119`
+- Residual: `runs/residual-flow/cia_compare_residualgaussianflow_500ep_cv_20260414-143621`
+
+实验口径:
+- 数据根使用 `data/CIA/band4_serialized`。
+- Residual 实验配置:
+  - `task="residual-flow"`
+  - `show_images=True`
+  - `show_bands=(0, 1, 2)`
+  - `seed=42`
+  - `fine_t1` warmup / tail 关闭
+- 为避免重复计算，本轮未重跑新的 Gaussian 对照，而是直接复用历史 baseline。
+
+量化对比（`epoch=499`）:
+- Gaussian baseline:
+  - `val_loss=0.0058`, `RMSE=0.0334`, `MAE=0.0134`, `PSNR=30.7065`
+  - `SSIM=0.9010`, `CC=0.7614`, `ERGAS=3.1436`, `SAM=0.0642`, `UIQI=0.7514`, `TRP=-0.1808`
+- Residual:
+  - `val_loss=0.0058`, `RMSE=0.0334`, `MAE=0.0134`, `PSNR=30.7315`
+  - `SSIM=0.9036`, `CC=0.7600`, `ERGAS=3.1385`, `SAM=0.0669`, `UIQI=0.7481`, `TRP=-0.1757`
+
+差异总结:
+- Residual 略优:
+  - `PSNR` `+0.0250`
+  - `SSIM` `+0.0026`
+  - `ERGAS` `-0.0051`
+  - `TRP` `+0.0051`（更接近 0）
+- Gaussian baseline 略优:
+  - `CC` `+0.0014`
+  - `SAM` `-0.0027`
+  - `UIQI` `+0.0033`
+- `val_loss/RMSE/MAE` 基本持平。
+
+显存摘要:
+- Gaussian baseline:
+  - `peak_allocated=10726.43 MiB`, `peak_reserved=11984.00 MiB`
+- Residual:
+  - `peak_allocated=10726.43 MiB`, `peak_reserved=12194.00 MiB`
+- 结论:
+  - 两者显存占用同量级，Residual 的 `peak_reserved` 略高。
+
+结论与限制:
+- 当前结果可表述为：`ResidualGaussianFlowMatching` 在这轮实际对比中总体持平略优，至少没有输给历史 Gaussian baseline。
+- 但这不是严格纯控制变量结论：
+  - 历史 Gaussian baseline 含 `condition_dropout_p=0.1`
+  - 本轮 Residual 按实验设计为 `dropout=0`
+- 因此当前更稳妥的结论是：
+  - Residual 具备进入后续实验主线的价值；
+  - 若要把优势严格归因到 wrapper 本身，仍需补一组同口径 Gaussian 重跑来封口。
 
 ### 2026-04-02 11:20:00 +0800 | 离线序列化数据预处理与自动识别
 
