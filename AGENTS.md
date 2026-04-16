@@ -113,6 +113,25 @@
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh launch-prepared --session ...`
   - `bash .codex/skills/remote-train-orchestrator/scripts/remote_train.sh status --session ...`
 
+## 3.5 当前分支偏离点（`feat/geo-edit-residual-flow-stage1`）
+
+- 本分支在 `ResidualGaussianFlowMatching` 上增加了可选的 Stage 1 geo-edit 起点分布，不影响默认主线行为。
+- 新增可选参数:
+  - `geo_edit_enabled`
+  - `geo_edit_sigma_low`
+  - `geo_edit_sigma_high`
+  - `geo_edit_mask_power`
+  - `geo_edit_mask_smooth_kernel`
+- 语义:
+  - 默认关闭时保持旧行为：以 `coarse_weight * coarse_delta` 为均值、`noise_std` 为统一噪声。
+  - 开启后使用 `|coarse_t2 - coarse_t1|` 构造软变化图，按空间位置调制 residual flow 的 `z_mean` 与 `sigma`：
+    - 不变区更接近 identity residual、低噪声
+    - 变化区更接近 `coarse_delta`、高噪声
+- 当前验证:
+  - `python -m compileall -q stf/models`
+  - `uv run pytest -q tests/smoke/test_geo_edit_residual_flow.py`
+  - 结果：`4 passed`
+
 ## 3.2 `fine_t1` warmup 严格配对复核（2026-04-01）
 
 - 对比实验:

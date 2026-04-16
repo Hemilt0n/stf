@@ -44,6 +44,37 @@ def build_change_weight_map(
     return 1.0 + change_loss_weight * norm_change
 
 
+def build_soft_change_map(
+    coarse_img_01,
+    coarse_img_02,
+    target_spatial_shape,
+    smooth_kernel_size: int = 3,
+    power: float = 1.0,
+):
+    change_map = torch.mean(torch.abs(coarse_img_02 - coarse_img_01), dim=1, keepdim=True)
+    if change_map.shape[-2:] != target_spatial_shape:
+        change_map = F.interpolate(
+            change_map,
+            size=target_spatial_shape,
+            mode='bilinear',
+            align_corners=False,
+        )
+    if smooth_kernel_size > 1:
+        padding = smooth_kernel_size // 2
+        change_map = F.avg_pool2d(
+            change_map,
+            kernel_size=smooth_kernel_size,
+            stride=1,
+            padding=padding,
+        )
+    denom = change_map.detach().mean(dim=(-2, -1), keepdim=True).clamp(min=1e-6)
+    norm_change = change_map / denom
+    soft_change = norm_change / (1.0 + norm_change)
+    if power != 1.0:
+        soft_change = soft_change.clamp(min=0.0).pow(power)
+    return soft_change.clamp(0.0, 1.0)
+
+
 def coarse_consistency_loss(
     pred_fine_img_02, coarse_img_02, loss_type: str = 'l1'
 ):
@@ -303,6 +334,11 @@ class ResidualGaussianFlowMatching(nn.Module):
         change_loss_weight=0.0,
         coarse_consistency_weight=0.0,
         coarse_consistency_loss_type='l1',
+        geo_edit_enabled=False,
+        geo_edit_sigma_low=0.0,
+        geo_edit_sigma_high=None,
+        geo_edit_mask_power=1.0,
+        geo_edit_mask_smooth_kernel=3,
     ):
         super().__init__()
         self.model = model
@@ -316,6 +352,21 @@ class ResidualGaussianFlowMatching(nn.Module):
         self.change_loss_weight = change_loss_weight
         self.coarse_consistency_weight = coarse_consistency_weight
         self.coarse_consistency_loss_type = coarse_consistency_loss_type
+        self.geo_edit_enabled = geo_edit_enabled
+        self.geo_edit_sigma_low = geo_edit_sigma_low
+        self.geo_edit_sigma_high = default(geo_edit_sigma_high, noise_std)
+        self.geo_edit_mask_power = geo_edit_mask_power
+        self.geo_edit_mask_smooth_kernel = geo_edit_mask_smooth_kernel
+        if self.geo_edit_sigma_low < 0.0:
+            raise ValueError("geo_edit_sigma_low must be >= 0")
+        if self.geo_edit_sigma_high < 0.0:
+            raise ValueError("geo_edit_sigma_high must be >= 0")
+        if self.geo_edit_sigma_low > self.geo_edit_sigma_high:
+            raise ValueError("geo_edit_sigma_low must be <= geo_edit_sigma_high")
+        if self.geo_edit_mask_power <= 0.0:
+            raise ValueError("geo_edit_mask_power must be > 0")
+        if self.geo_edit_mask_smooth_kernel < 1 or self.geo_edit_mask_smooth_kernel % 2 == 0:
+            raise ValueError("geo_edit_mask_smooth_kernel must be an odd integer >= 1")
 
     @property
     def loss_fn(self):
@@ -344,17 +395,48 @@ class ResidualGaussianFlowMatching(nn.Module):
             raise ValueError(f'invalid path schedule {self.path_schedule}')
         return alpha, alpha_prime
 
+    def _build_residual_start_distribution(self, coarse_img_01, coarse_img_02, target_spatial_shape):
+        coarse_delta = coarse_img_02 - coarse_img_01
+        if coarse_delta.shape[-2:] != target_spatial_shape:
+            coarse_delta = F.interpolate(
+                coarse_delta,
+                size=target_spatial_shape,
+                mode='bilinear',
+                align_corners=False,
+            )
+        if not self.geo_edit_enabled:
+            sigma = torch.full_like(coarse_delta, self.noise_std)
+            return self.coarse_weight * coarse_delta, sigma, None
+
+        edit_mask = build_soft_change_map(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=target_spatial_shape,
+            smooth_kernel_size=self.geo_edit_mask_smooth_kernel,
+            power=self.geo_edit_mask_power,
+        )
+        coarse_prior = self.coarse_weight * coarse_delta
+        z_mean = edit_mask * coarse_prior
+        sigma = self.geo_edit_sigma_low + (self.geo_edit_sigma_high - self.geo_edit_sigma_low) * edit_mask
+        sigma = sigma.expand_as(coarse_delta)
+        return z_mean, sigma, edit_mask
+
     def forward(self, coarse_img_01, coarse_img_02, fine_img_01, fine_img_02):
         b = fine_img_02.shape[0]
         device = fine_img_02.device
 
         # Residual target
         delta = fine_img_02 - fine_img_01
-        coarse_delta = coarse_img_02 - coarse_img_01
 
-        # Coarse-influenced Gaussian start around coarse residual
-        z_mean = self.coarse_weight * coarse_delta
-        z = z_mean + torch.randn_like(delta) * self.noise_std
+        # Geo-edit stage 1 uses a spatially varying start distribution:
+        # unchanged regions stay near identity residual, changed regions start
+        # near the coarse residual with stronger stochasticity.
+        z_mean, sigma, _edit_mask = self._build_residual_start_distribution(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=delta.shape[-2:],
+        )
+        z = z_mean + torch.randn_like(delta) * sigma
 
         # Sample time
         t = torch.rand(b, device=device).type_as(delta)
@@ -405,10 +487,12 @@ class ResidualGaussianFlowMatching(nn.Module):
         dtype = fine_img_01.dtype
         dt = 1.0 / self.num_steps
 
-        # Initialize residual state near the coarse residual
-        coarse_delta = coarse_img_02 - coarse_img_01
-        z_mean = self.coarse_weight * coarse_delta
-        x_t = z_mean + torch.randn_like(fine_img_01) * self.noise_std
+        z_mean, sigma, _edit_mask = self._build_residual_start_distribution(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=fine_img_01.shape[-2:],
+        )
+        x_t = z_mean + torch.randn_like(fine_img_01) * sigma
 
         for t_step in range(self.num_steps):
             t = torch.full(

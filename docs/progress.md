@@ -1,7 +1,7 @@
 # STF 项目进展记录
 
-最后更新: 2026-04-16 16:45:50 +0800  
-当前分支: `master`
+最后更新: 2026-04-16 18:49:25 +0800  
+当前分支: `feat/geo-edit-residual-flow-stage1`
 
 ## 1. 文档用途
 
@@ -619,6 +619,35 @@
   - `status` 在终态时把本地执行快照归档到 `completed/`。
 - 约束:
   - 不额外引入更复杂的状态层级，避免目录状态机膨胀。
+
+### 2026-04-16 18:49:25 +0800 | `feat/geo-edit-residual-flow-stage1`（进行中）
+
+- 背景/目标:
+  - 基于“地理对齐下的局部编辑 + 全局季节迁移”叙事，先落地 `Geo-Edit Residual Flow` 的 Stage 1。
+  - 第一阶段只改 `ResidualGaussianFlowMatching` 的起点分布，不提前重写 backbone。
+- 实现与代码改动:
+  - `stf/models/flow.py`
+    - 新增 `build_soft_change_map(...)`，由 `|coarse_t2 - coarse_t1|` 构造软变化图。
+    - `ResidualGaussianFlowMatching` 新增可选 geo-edit 参数：
+      - `geo_edit_enabled`
+      - `geo_edit_sigma_low`
+      - `geo_edit_sigma_high`
+      - `geo_edit_mask_power`
+      - `geo_edit_mask_smooth_kernel`
+    - 新增 `_build_residual_start_distribution(...)`：
+      - 默认关闭时保持旧行为：`z_mean = coarse_weight * coarse_delta`，`sigma = noise_std`
+      - 开启后改为“空间变化感知”的起点分布：
+        - 不变区接近 identity residual，低噪声
+        - 变化区接近 `coarse_delta`，高噪声
+  - `tests/smoke/test_geo_edit_residual_flow.py`
+    - 覆盖无变化软掩码、局部变化高亮、legacy 路径等价、geo-edit 路径空间变 `sigma/z_mean`
+- 验证:
+  - `python -m compileall -q stf/models`
+  - `uv run pytest -q tests/smoke/test_geo_edit_residual_flow.py`
+  - 结果：`4 passed`
+- 阶段结论:
+  - Stage 1 已具备最小可运行实现，且默认行为保持向后兼容。
+  - 下一步可在实验配置中显式启用 geo-edit 参数，验证其是否优于统一高斯起点与全局 warmup。
 
 ### 回传模板（建议）
 
