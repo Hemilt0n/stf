@@ -92,7 +92,7 @@ def save_trust_map_image(
     filename: str,
     change_tensor=None,
 ) -> None:
-    trust = trust_tensor[0].detach().cpu().numpy()
+    trust = trust_tensor[0].detach().float().cpu().numpy()
     if trust.ndim == 3:
         trust = trust[0]
     trust_img = np.clip(trust, 0.0, 1.0)
@@ -100,7 +100,7 @@ def save_trust_map_image(
 
     canvas = trust_img
     if change_tensor is not None:
-        change = change_tensor[0].detach().cpu().numpy()
+        change = change_tensor[0].detach().float().cpu().numpy()
         if change.ndim == 3:
             change = change[0]
         change_img = np.clip(change, 0.0, 1.0)
