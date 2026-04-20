@@ -1,6 +1,6 @@
 # STF 项目进展记录
 
-最后更新: 2026-04-19 11:29:50 +0800  
+最后更新: 2026-04-20 00:00:00 +0800  
 当前分支: `feat/geo-edit-residual-flow-stage1`
 
 ## 1. 文档用途
@@ -703,6 +703,51 @@
   4. 在 Stage 1.1 没做完之前，不进入 `trust map` / `dual-head`
      - 先把 Stage 1 的 edit 区域控制收窄，再判断是否需要进入 Stage 2
 
+补充（2026-04-20 00:00:00 +0800）| `Geo-Edit Residual Flow` Stage 1.1 两组参数收缩结果:
+- 实验:
+  - `Sharper Mask`: `runs/geo_edit/cia_compare_residualgaussianflow_geo_edit_stage11_sharper_mask_500ep_20260419-120153`
+  - `Sharper Mask + Stronger Edit`: `runs/geo_edit/cia_compare_residualgaussianflow_geo_edit_stage11_sharper_mask_stronger_edit_500ep_20260419-162236`
+  - 对比参考:
+    - geo_edit stage1: `runs/geo_edit/cia_compare_residualgaussianflow_geo_edit_stage1_500ep_20260416-190231`
+    - residual baseline: `runs/residual-flow/cia_compare_residualgaussianflow_500ep_cv_20260414-143621`
+- 变更口径:
+  - `Sharper Mask`:
+    - `geo_edit_mask_smooth_kernel=1`
+    - `geo_edit_mask_power=1.5`
+    - `geo_edit_sigma_low=0.1`
+    - `geo_edit_sigma_high=1.0`
+  - `Sharper Mask + Stronger Edit`:
+    - `geo_edit_mask_smooth_kernel=1`
+    - `geo_edit_mask_power=1.5`
+    - `geo_edit_sigma_low=0.0`
+    - `geo_edit_sigma_high=1.2`
+- `epoch=499` 量化结果:
+  - `Sharper Mask`:
+    - `val_loss=0.0059`, `RMSE=0.0335`, `MAE=0.0135`, `PSNR=30.6614`
+    - `SSIM=0.8999`, `CC=0.7552`, `ERGAS=3.1499`, `SAM=0.0671`, `UIQI=0.7439`, `TRP=-0.1786`
+  - `Sharper Mask + Stronger Edit`:
+    - `val_loss=0.0059`, `RMSE=0.0338`, `MAE=0.0135`, `PSNR=30.5586`
+    - `SSIM=0.8993`, `CC=0.7498`, `ERGAS=3.1444`, `SAM=0.0666`, `UIQI=0.7381`, `TRP=-0.1801`
+  - geo_edit stage1:
+    - `val_loss=0.0059`, `RMSE=0.0334`, `MAE=0.0133`, `PSNR=30.7446`
+    - `SSIM=0.9014`, `CC=0.7542`, `ERGAS=3.1281`, `SAM=0.0651`, `UIQI=0.7428`, `TRP=-0.1597`
+  - residual baseline:
+    - `val_loss=0.0058`, `RMSE=0.0334`, `MAE=0.0134`, `PSNR=30.7315`
+    - `SSIM=0.9036`, `CC=0.7600`, `ERGAS=3.1385`, `SAM=0.0669`, `UIQI=0.7481`, `TRP=-0.1757`
+- 对比结论:
+  - 两条 Stage 1.1 都没有超过 geo_edit stage1。
+  - `Sharper Mask` 相比 stage1 只小幅补回了 `CC/UIQI`，但 `TRP` 从 `-0.1597` 回落到 `-0.1786`，`PSNR` 也下降。
+  - `Sharper Mask + Stronger Edit` 相比 residual baseline，在 `PSNR/SSIM/CC/UIQI/TRP` 上全部回退，说明继续加大 edit 强度没有带来收益。
+  - 当前最值得保留的 geo-edit 版本仍是首轮 stage1，而不是 Stage 1.1 两个收缩变体。
+- 阶段判断:
+  - 问题核心已经不再是 `sigma` 强度，而是 `mask` 质量。
+  - `kernel=1 + power=1.5` 的 sharper mask 过于依赖粗糙的 coarse change，导致真实变化区域被切窄，复制倾向重新出现。
+  - 因此应停止继续做纯 `mask_power/sigma` 调参，不再扩展 Stage 1.1 这条支线。
+- 下一步计划:
+  1. 保留 `geo_edit stage1` 作为当前最佳 geo-edit 参考线。
+  2. 下一阶段转向 `mask refinement`，优先验证多尺度软 mask 或 learned trust/refine mask。
+  3. 在 mask/refinement 之前，不继续追加更强噪声或更硬 mask 的 sweep。
+
 ### 回传模板（建议）
 
 - 时间:
@@ -734,9 +779,7 @@
 
 ## 7. 后续计划（短期）
 
-1. 完成 `Geo-Edit Residual Flow` Stage 1.1 两组定向参数收缩实验：
-   - `Sharper Mask`
-   - `Sharper Mask + Stronger Edit`
-2. 重点观察 `TRP` 是否保持改善，同时 `SSIM/CC/UIQI` 是否回升。
-3. 若 Stage 1.1 成立，再进入 Stage 2 `Condition Trust Map`。
-4. 若 Stage 1.1 仍旧表现为“TRP 改善但结构一致性回退”，再考虑把 `Boundary/Topology` 约束提前，而不是立即上双头。
+1. 保留 `Geo-Edit Residual Flow` Stage 1 作为当前最佳 geo-edit 基线，不继续扩 `Stage 1.1` 参数收缩支线。
+2. 进入下一阶段 `mask refinement`，优先做多尺度软 mask 或 learned trust/refine mask。
+3. 验证目标从“继续放大 edit”切换为“在保持 `TRP` 改善的同时恢复 `SSIM/CC/UIQI`”。
+4. 在 `mask refinement` 没结果前，不进入更重的 `dual-head` 或更大规模噪声 sweep。
