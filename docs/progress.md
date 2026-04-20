@@ -1,6 +1,6 @@
 # STF 项目进展记录
 
-最后更新: 2026-04-20 00:00:00 +0800  
+最后更新: 2026-04-20 12:00:00 +0800  
 当前分支: `feat/geo-edit-residual-flow-stage1`
 
 ## 1. 文档用途
@@ -748,6 +748,47 @@
   2. 下一阶段转向 `mask refinement`，优先验证多尺度软 mask 或 learned trust/refine mask。
   3. 在 mask/refinement 之前，不继续追加更强噪声或更硬 mask 的 sweep。
 
+补充（2026-04-20 12:00:00 +0800）| `Stage 2` 最小 trust gating 已实现:
+- 背景/目标:
+  - Stage 1 只改了 residual flow 起点分布，尚未触及 backbone 对 `fine_t1` 条件的使用方式。
+  - 当前 `PredTrajNet` 仍然把 `x_fine/x_coarse/x_noisy` 直接早融合，缺少显式的条件可信度门控。
+  - 因此本轮先实现一个最小版 Stage 2：只在 fine 条件分支最前面加入 `trust * x_fine`，不引入双头。
+- 代码改动:
+  - 新增共享 helper:
+    - `stf/models/change_maps.py`
+    - 统一 `build_soft_change_map(...)`
+    - 新增 `summarize_trust_by_change(...)`
+  - `PredTrajNet` 新增最小 trust gate:
+    - `trust_gate_enabled`
+    - `trust_gate_hidden_dim`
+    - `trust_gate_init`
+    - 用轻量 head 从 `x_fine/x_coarse/x_noisy` 预测单通道 `trust_map`
+    - 前向改为 `x_fine_gated = trust_map * x_fine`
+    - 最后一层 bias 用 `trust_gate_init` 做 identity-biased 初始化，避免训练初期把 `fine_t1` 直接砍掉
+  - 验证期可观测性:
+    - `TrainConfig` 新增:
+      - `val_trust_log_stats`
+      - `val_trust_save_max`
+    - `TrainEngine` 在验证期可记录:
+      - `trust_mean`
+      - `trust_changed`
+      - `trust_unchanged`
+    - 支持把少量 trust map 图落盘
+  - IO:
+    - `stf/io/images.py` 新增 `save_trust_map_image(...)`
+- 关键语义:
+  - Stage 2 不是替代 Stage 1，而是在当前最佳 Stage 1 baseline 上补一层显式 trust gating。
+  - changed / unchanged 区域统计目前仍使用 coarse-derived soft change map 作为观测参考，不把它当监督真值。
+- 验证:
+  - `uv run python -m compileall -q stf/models stf/engine stf/io tests/smoke`
+  - `uv run pytest -q tests/smoke/test_geo_edit_residual_flow.py tests/smoke/test_trust_gated_pred_traj_net.py`
+  - 结果: `8 passed`
+- 当前判断:
+  - Stage 2 的最小实现已经具备训练入口、验证观测和默认向后兼容性。
+  - 下一步不再回到 Stage 1 的更锐 mask / 更强噪声 sweep，而是直接做:
+    1. 短程 sanity check
+    2. 500 epoch 完整对比（`geo_edit stage1` vs `residual baseline`）
+
 ### 回传模板（建议）
 
 - 时间:
@@ -779,7 +820,12 @@
 
 ## 7. 后续计划（短期）
 
-1. 保留 `Geo-Edit Residual Flow` Stage 1 作为当前最佳 geo-edit 基线，不继续扩 `Stage 1.1` 参数收缩支线。
-2. 进入下一阶段 `mask refinement`，优先做多尺度软 mask 或 learned trust/refine mask。
-3. 验证目标从“继续放大 edit”切换为“在保持 `TRP` 改善的同时恢复 `SSIM/CC/UIQI`”。
-4. 在 `mask refinement` 没结果前，不进入更重的 `dual-head` 或更大规模噪声 sweep。
+1. 以 `geo_edit stage1` 作为当前最佳 baseline，先跑 `Stage 2` trust-gated 的短程 sanity check。
+2. sanity 通过后，跑一组 500 epoch 完整对比；对比对象只保留:
+   - `geo_edit stage1`
+   - `residual baseline`
+3. 验证时开启 trust 可观测性，重点看:
+   - `trust_changed`
+   - `trust_unchanged`
+   - trust map 图是否符合“变化区低 trust、静态区高 trust”
+4. 在最小 trust gate 没跑完前，不进入双头。

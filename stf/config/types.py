@@ -39,6 +39,8 @@ class TrainConfig:
     val_step_log_keys: bool = False
     val_step_log_max_keys: int = 8
     val_step_save_csv: bool = False
+    val_trust_log_stats: bool = False
+    val_trust_save_max: int = 0
 
 
 @dataclass

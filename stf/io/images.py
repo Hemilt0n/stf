@@ -84,3 +84,28 @@ def save_show_image(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     skio.imsave(output_dir / filename, canvas)
+
+
+def save_trust_map_image(
+    trust_tensor,
+    output_dir: Path,
+    filename: str,
+    change_tensor=None,
+) -> None:
+    trust = trust_tensor[0].detach().cpu().numpy()
+    if trust.ndim == 3:
+        trust = trust[0]
+    trust_img = np.clip(trust, 0.0, 1.0)
+    trust_img = (trust_img * 255.0).astype(np.uint8)
+
+    canvas = trust_img
+    if change_tensor is not None:
+        change = change_tensor[0].detach().cpu().numpy()
+        if change.ndim == 3:
+            change = change[0]
+        change_img = np.clip(change, 0.0, 1.0)
+        change_img = (change_img * 255.0).astype(np.uint8)
+        canvas = np.concatenate((change_img, trust_img), axis=1)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    skio.imsave(output_dir / filename, canvas)

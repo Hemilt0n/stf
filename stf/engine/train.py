@@ -11,7 +11,7 @@ from torch.amp import GradScaler, autocast
 
 from stf.compat import load_legacy_checkpoint
 from stf.engine.base import BaseEngine
-from stf.io import save_prediction_image, save_show_image
+from stf.io import save_prediction_image, save_show_image, save_trust_map_image
 from stf.logging import Tracker
 
 
@@ -47,6 +47,8 @@ class TrainEngine(BaseEngine):
         self.val_step_log_keys = bool(getattr(experiment.train, "val_step_log_keys", False))
         self.val_step_log_max_keys = max(1, int(getattr(experiment.train, "val_step_log_max_keys", 8)))
         self.val_step_save_csv = bool(getattr(experiment.train, "val_step_save_csv", False))
+        self.val_trust_log_stats = bool(getattr(experiment.train, "val_trust_log_stats", False))
+        self.val_trust_save_max = max(0, int(getattr(experiment.train, "val_trust_save_max", 0)))
         if self.grad_accum_steps <= 0:
             raise ValueError("train.grad_accum_steps must be >= 1")
         if self.fine_t1_noise_warmup_epochs < 0:
@@ -197,8 +199,12 @@ class TrainEngine(BaseEngine):
             tensor = tensor.contiguous(memory_format=torch.channels_last)
         return tensor
 
-    def _save_batch_images(self, outputs, batch):
-        if not self.experiment.io.save_images and not self.experiment.io.show_images:
+    def _save_batch_images(self, outputs, batch, trust_observability=None):
+        if (
+            not self.experiment.io.save_images
+            and not self.experiment.io.show_images
+            and self.val_trust_save_max <= 0
+        ):
             return
 
         keys = batch.get("key", [str(i) for i in range(outputs.shape[0])])
@@ -232,6 +238,23 @@ class TrainEngine(BaseEngine):
                     normalize_mode,
                     show_bands=self.experiment.io.show_bands,
                 )
+            if (
+                trust_observability is not None
+                and self.val_trust_save_max > 0
+                and self._val_trust_maps_saved < self.val_trust_save_max
+            ):
+                trust_map = trust_observability.get("trust_map")
+                change_map = trust_observability.get("change_map")
+                if trust_map is not None:
+                    trust_dir = self.run_dirs["images"] / dataset_name / f"epoch_{self.current_epoch}" / "trust"
+                    change_slice = None if change_map is None else change_map[idx : idx + 1]
+                    save_trust_map_image(
+                        trust_map[idx : idx + 1],
+                        trust_dir,
+                        f"{key}.png",
+                        change_tensor=change_slice,
+                    )
+                    self._val_trust_maps_saved += 1
 
     @staticmethod
     def _batch_field_to_list(value) -> list:
@@ -321,9 +344,11 @@ class TrainEngine(BaseEngine):
 
         tracker = Tracker("loss", *[metric.__name__ for metric in self.metrics])
         metric_names = [metric.__name__ for metric in self.metrics]
+        trust_metric_names = ["trust_mean", "trust_changed", "trust_unchanged"]
         debug_writer = None
         debug_file = None
         debug_path = None
+        self._val_trust_maps_saved = 0
         if self.val_step_save_csv:
             debug_dir = self.run_dirs["root"] / "debug"
             debug_dir.mkdir(parents=True, exist_ok=True)
@@ -331,7 +356,16 @@ class TrainEngine(BaseEngine):
             debug_file = debug_path.open("w", newline="")
             debug_writer = csv.DictWriter(
                 debug_file,
-                fieldnames=["epoch", "iter", "val_step", "loss", "sample_idx", "key", *metric_names],
+                fieldnames=[
+                    "epoch",
+                    "iter",
+                    "val_step",
+                    "loss",
+                    "sample_idx",
+                    "key",
+                    *metric_names,
+                    *(trust_metric_names if self.val_trust_log_stats else []),
+                ],
             )
             debug_writer.writeheader()
         for iter_idx, batch in enumerate(self.val_loader):
@@ -339,6 +373,7 @@ class TrainEngine(BaseEngine):
             gt = self._move_batch_tensor(batch["fine_img_02"])
 
             with torch.no_grad(), autocast("cuda", dtype=self.amp_dtype, enabled=self.amp_enabled):
+                self._clear_trust_observability(sampler_model)
                 outputs = sampler_model.sample(*sample_inputs)
                 loss = F.mse_loss(outputs, gt)
 
@@ -362,7 +397,16 @@ class TrainEngine(BaseEngine):
                 metric_values[metric.__name__] = value
                 self.backend_logger.add_scalar(f"metric/val_step/{metric.__name__}", value, self.current_val_step)
 
-            self._save_batch_images(outputs, batch)
+            trust_values = {}
+            trust_observability = self._get_trust_observability(sampler_model)
+            if self.val_trust_log_stats and trust_observability is not None:
+                for name in trust_metric_names:
+                    value = float(trust_observability[name])
+                    tracker.update(name, value)
+                    trust_values[name] = value
+                    self.backend_logger.add_scalar(f"trust/val_step/{name}", value, self.current_val_step)
+
+            self._save_batch_images(outputs, batch, trust_observability=trust_observability)
             sample_idx_full, key_full = self._debug_batch_keys(batch, max_items=None)
             if debug_writer is not None:
                 debug_writer.writerow(
@@ -374,6 +418,7 @@ class TrainEngine(BaseEngine):
                         "sample_idx": sample_idx_full,
                         "key": key_full,
                         **{name: f"{metric_values[name]:.6e}" for name in metric_names},
+                        **{name: f"{trust_values[name]:.6e}" for name in trust_values},
                     }
                 )
             sample_idx_preview, key_preview = self._debug_batch_keys(
@@ -381,24 +426,62 @@ class TrainEngine(BaseEngine):
             )
             self.current_val_step += 1
             if self.val_step_log_keys:
+                trust_msg = ""
+                if trust_values:
+                    trust_msg = " " + " ".join(
+                        [f"{name}={value:.4f}" for name, value in trust_values.items()]
+                    )
                 self.txt_logger.info(
                     "val "
                     f"epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e} "
-                    f"sample_idx=[{sample_idx_preview}] key=[{key_preview}]"
+                    f"sample_idx=[{sample_idx_preview}] key=[{key_preview}]{trust_msg}"
                 )
             else:
-                self.txt_logger.info(f"val epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}")
+                trust_msg = ""
+                if trust_values:
+                    trust_msg = " " + " ".join(
+                        [f"{name}={value:.4f}" for name, value in trust_values.items()]
+                    )
+                self.txt_logger.info(
+                    f"val epoch={self.current_epoch} iter={iter_idx} loss={loss_value:.4e}{trust_msg}"
+                )
 
         if debug_file is not None:
             debug_file.close()
             self.txt_logger.info(f"Saved val-step debug csv: {debug_path}")
 
         for key, value in tracker.results.items():
-            self.backend_logger.add_scalar(f"metric/val_epoch/{key}", value, self.current_epoch)
+            if key in trust_metric_names:
+                self.backend_logger.add_scalar(f"trust/val_epoch/{key}", value, self.current_epoch)
+            else:
+                self.backend_logger.add_scalar(f"metric/val_epoch/{key}", value, self.current_epoch)
 
         msg = ", ".join([f"{k}={v:.4f}" for k, v in tracker.results.items()])
         self.txt_logger.info(f"val epoch={self.current_epoch} {msg}")
         return tracker.results
+
+    @staticmethod
+    def _trust_observable_candidates(model):
+        candidates = [model]
+        inner_model = getattr(model, "model", None)
+        if inner_model is not None and inner_model is not model:
+            candidates.append(inner_model)
+        return candidates
+
+    def _clear_trust_observability(self, model):
+        for candidate in self._trust_observable_candidates(model):
+            clear_fn = getattr(candidate, "clear_last_trust_observability", None)
+            if callable(clear_fn):
+                clear_fn()
+
+    def _get_trust_observability(self, model):
+        for candidate in self._trust_observable_candidates(model):
+            get_fn = getattr(candidate, "get_last_trust_observability", None)
+            if callable(get_fn):
+                state = get_fn()
+                if state is not None:
+                    return state
+        return None
 
     def _save_checkpoint(self):
         data = {

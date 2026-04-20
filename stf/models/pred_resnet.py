@@ -8,7 +8,10 @@ import torch
 from torch import nn, einsum
 import torch.nn.functional as F
 
-
+try:
+    from .change_maps import build_soft_change_map, summarize_trust_by_change
+except ImportError:  # pragma: no cover - supports direct file loading in smoke tests
+    from change_maps import build_soft_change_map, summarize_trust_by_change
 from einops import rearrange, reduce
 from einops.layers.torch import Rearrange
 
@@ -467,6 +470,9 @@ class PredTrajNet(nn.Module):
         learned_sinusoidal_cond=False,
         learned_sinusoidal_dim=16,
         attention_backend="auto",
+        trust_gate_enabled=False,
+        trust_gate_hidden_dim=None,
+        trust_gate_init=0.9,
     ):
         super().__init__()
         if attention_backend not in {"auto", "sdpa", "classic"}:
@@ -475,6 +481,7 @@ class PredTrajNet(nn.Module):
                 "Expected one of ['auto', 'sdpa', 'classic']"
             )
         self.attention_backend = attention_backend
+        self.trust_gate_enabled = trust_gate_enabled
         # Keep argument semantics aligned with PredNoiseNet. The only intended
         # architectural difference is single-branch fusion instead of dual-branch
         # clean/noisy processing.
@@ -486,6 +493,22 @@ class PredTrajNet(nn.Module):
         self.fine_init_conv = nn.Conv2d(input_channels, init_dim, 3, 1, 1)
         self.coarse_init_conv = nn.Conv2d(input_channels * 2, init_dim, 3, 1, 1)
         self.noisy_init_conv = nn.Conv2d(input_channels, init_dim, 3, 1, 1)
+        if not (0.0 < trust_gate_init < 1.0):
+            raise ValueError("trust_gate_init must be in (0, 1)")
+        self.trust_gate_init = trust_gate_init
+        self._last_trust_observability = None
+        if self.trust_gate_enabled:
+            trust_hidden_dim = default(trust_gate_hidden_dim, init_dim)
+            self.trust_gate_head = nn.Sequential(
+                nn.Conv2d(init_dim * 3, trust_hidden_dim, 1),
+                nn.GELU(),
+                nn.Conv2d(trust_hidden_dim, 1, 1),
+            )
+            init_bias = math.log(trust_gate_init / (1.0 - trust_gate_init))
+            nn.init.zeros_(self.trust_gate_head[-1].weight)
+            nn.init.constant_(self.trust_gate_head[-1].bias, init_bias)
+        else:
+            self.trust_gate_head = None
         self.init_conv = nn.Conv2d(init_dim * 3, init_dim, 1)
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
@@ -547,6 +570,31 @@ class PredTrajNet(nn.Module):
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
+    def clear_last_trust_observability(self):
+        self._last_trust_observability = None
+
+    def get_last_trust_observability(self):
+        return self._last_trust_observability
+
+    def _build_trust_map(self, x_fine, x_coarse, x_noisy):
+        if not self.trust_gate_enabled:
+            return None
+        trust_logits = self.trust_gate_head(torch.cat((x_fine, x_coarse, x_noisy), dim=1))
+        return torch.sigmoid(trust_logits)
+
+    def _record_trust_observability(self, coarse_img_01, coarse_img_02, trust_map):
+        change_map = build_soft_change_map(
+            coarse_img_01,
+            coarse_img_02,
+            target_spatial_shape=trust_map.shape[-2:],
+        )
+        stats = summarize_trust_by_change(trust_map, change_map)
+        self._last_trust_observability = {
+            **stats,
+            "trust_map": trust_map.detach(),
+            "change_map": change_map.detach(),
+        }
+
     def _prepare_self_condition_inputs(
         self,
         fine_img_01,
@@ -587,6 +635,15 @@ class PredTrajNet(nn.Module):
         x_fine = self.fine_init_conv(fine_in)
         x_coarse = self.coarse_init_conv(torch.cat((coarse_01_in, coarse_02_in), dim=1))
         x_noisy = self.noisy_init_conv(noisy_in)
+        trust_map = self._build_trust_map(x_fine, x_coarse, x_noisy)
+        if trust_map is not None:
+            x_fine = x_fine * trust_map
+            if self.training:
+                self._last_trust_observability = None
+            else:
+                self._record_trust_observability(coarse_img_01, coarse_img_02, trust_map)
+        else:
+            self._last_trust_observability = None
         x = self.init_conv(torch.cat((x_fine, x_coarse, x_noisy), dim=1))
         r = x.clone()
 

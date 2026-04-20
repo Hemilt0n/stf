@@ -5,6 +5,11 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 
+try:
+    from .change_maps import build_soft_change_map
+except ImportError:  # pragma: no cover - supports direct file loading in smoke tests
+    from change_maps import build_soft_change_map
+
 
 def default(val, d):
     if val is not None:
@@ -42,37 +47,6 @@ def build_change_weight_map(
     denom = change_map.detach().mean(dim=(-2, -1), keepdim=True).clamp(min=1e-6)
     norm_change = change_map / denom
     return 1.0 + change_loss_weight * norm_change
-
-
-def build_soft_change_map(
-    coarse_img_01,
-    coarse_img_02,
-    target_spatial_shape,
-    smooth_kernel_size: int = 3,
-    power: float = 1.0,
-):
-    change_map = torch.mean(torch.abs(coarse_img_02 - coarse_img_01), dim=1, keepdim=True)
-    if change_map.shape[-2:] != target_spatial_shape:
-        change_map = F.interpolate(
-            change_map,
-            size=target_spatial_shape,
-            mode='bilinear',
-            align_corners=False,
-        )
-    if smooth_kernel_size > 1:
-        padding = smooth_kernel_size // 2
-        change_map = F.avg_pool2d(
-            change_map,
-            kernel_size=smooth_kernel_size,
-            stride=1,
-            padding=padding,
-        )
-    denom = change_map.detach().mean(dim=(-2, -1), keepdim=True).clamp(min=1e-6)
-    norm_change = change_map / denom
-    soft_change = norm_change / (1.0 + norm_change)
-    if power != 1.0:
-        soft_change = soft_change.clamp(min=0.0).pow(power)
-    return soft_change.clamp(0.0, 1.0)
 
 
 def coarse_consistency_loss(

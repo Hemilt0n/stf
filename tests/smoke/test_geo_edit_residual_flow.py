@@ -1,9 +1,17 @@
+import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
 import torch
 
+
+CHANGE_MAPS_PATH = Path(__file__).resolve().parents[2] / "stf" / "models" / "change_maps.py"
+CHANGE_MAPS_SPEC = spec_from_file_location("change_maps", CHANGE_MAPS_PATH)
+CHANGE_MAPS_MODULE = module_from_spec(CHANGE_MAPS_SPEC)
+assert CHANGE_MAPS_SPEC is not None and CHANGE_MAPS_SPEC.loader is not None
+sys.modules["change_maps"] = CHANGE_MAPS_MODULE
+CHANGE_MAPS_SPEC.loader.exec_module(CHANGE_MAPS_MODULE)
 
 FLOW_PATH = Path(__file__).resolve().parents[2] / "stf" / "models" / "flow.py"
 FLOW_SPEC = spec_from_file_location("stf_models_flow_test", FLOW_PATH)

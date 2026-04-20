@@ -128,16 +128,17 @@
     - 不变区更接近 identity residual、低噪声
     - 变化区更接近 `coarse_delta`、高噪声
 - 当前验证:
-  - `python -m compileall -q stf/models`
-  - `uv run pytest -q tests/smoke/test_geo_edit_residual_flow.py`
-  - 结果：`4 passed`
+  - `uv run python -m compileall -q stf/models stf/engine stf/io tests/smoke`
+  - `uv run pytest -q tests/smoke/test_geo_edit_residual_flow.py tests/smoke/test_trust_gated_pred_traj_net.py`
+  - 结果：`8 passed`
 - 当前分支实验摘要:
   - `geo_edit stage1` 是当前最佳 geo-edit 参考线。
   - `Stage 1.1` 两组纯参数收缩（sharper mask / stronger edit）均未超过 `stage1`。
-  - 当前判断是问题更偏向 `mask` 质量，而不是单纯的 `sigma` 强度。
+  - `Stage 2` 最小 trust gate 已经落地到 `PredTrajNet` 的 fine 条件分支。
 - 当前分支下一步:
-  - 转向 `mask refinement`，优先考虑多尺度软 mask 或 learned trust/refine mask。
-  - 在 `mask refinement` 验证前，不继续扩纯 `mask_power/sigma` sweep。
+  - 先跑 `Stage 2` 的短程 sanity check。
+  - 再跑 500 epoch 完整对比，基线只保留 `geo_edit stage1` 和 `residual baseline`。
+  - 验证期启用 trust 统计与 trust map 图导出，确认模型是否学到“变化区低 trust、静态区高 trust”。
 - 实验明细与指标账本:
   - 统一记录在 `docs/progress.md`，`AGENTS.md` 只保留恢复上下文所需摘要。
 
