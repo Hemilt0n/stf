@@ -1,6 +1,6 @@
 # STF 项目进展记录
 
-最后更新: 2026-04-16 18:49:25 +0800  
+最后更新: 2026-04-19 11:29:50 +0800  
 当前分支: `feat/geo-edit-residual-flow-stage1`
 
 ## 1. 文档用途
@@ -649,6 +649,60 @@
   - Stage 1 已具备最小可运行实现，且默认行为保持向后兼容。
   - 下一步可在实验配置中显式启用 geo-edit 参数，验证其是否优于统一高斯起点与全局 warmup。
 
+补充（2026-04-19 11:29:50 +0800）| `Geo-Edit Residual Flow` Stage 1 首轮 500 epoch 结果:
+- 实验:
+  - geo_edit stage1: `runs/geo_edit/cia_compare_residualgaussianflow_geo_edit_stage1_500ep_20260416-190231`
+  - residual baseline: `runs/residual-flow/cia_compare_residualgaussianflow_500ep_cv_20260414-143621`
+  - 历史 Gaussian baseline: `runs/flow/change_aware_fine_t1_baseline_matched_cia_20260331-173119`
+- 对齐口径:
+  - 数据根统一为 `data/CIA/band4_serialized`
+  - `seed=42`
+  - optimizer / dataloader / train switches 与 residual baseline 保持一致
+  - 仅额外开启:
+    - `geo_edit_enabled=True`
+    - `geo_edit_sigma_low=0.1`
+    - `geo_edit_sigma_high=1.0`
+    - `geo_edit_mask_power=1.0`
+    - `geo_edit_mask_smooth_kernel=3`
+- `epoch=499` 量化结果:
+  - geo_edit stage1:
+    - `val_loss=0.0059`, `RMSE=0.0334`, `MAE=0.0133`, `PSNR=30.7446`
+    - `SSIM=0.9014`, `CC=0.7542`, `ERGAS=3.1281`, `SAM=0.0651`, `UIQI=0.7428`, `TRP=-0.1597`
+  - residual baseline:
+    - `val_loss=0.0058`, `RMSE=0.0334`, `MAE=0.0134`, `PSNR=30.7315`
+    - `SSIM=0.9036`, `CC=0.7600`, `ERGAS=3.1385`, `SAM=0.0669`, `UIQI=0.7481`, `TRP=-0.1757`
+- 差异总结:
+  - geo_edit stage1 略优:
+    - `MAE`
+    - `PSNR`
+    - `ERGAS`
+    - `SAM`
+    - `TRP`（改善最明显，`-0.1757 -> -0.1597`）
+  - residual baseline 略优:
+    - `val_loss`
+    - `SSIM`
+    - `CC`
+    - `UIQI`
+  - `RMSE` 基本持平。
+- 阶段判断:
+  - 这不是失败实验，说明“局部编辑式 residual flow 起点”方向成立。
+  - 最强正信号是 `TRP` 明显改善，说明复制旧时相的倾向被有效削弱。
+  - 但 `SSIM/CC/UIQI` 回退，说明当前 edit mask 或 spatial noise 仍然过宽，低变化区域一致性受到影响。
+- 下一步计划（Stage 1.1）:
+  1. 跑 `Sharper Mask`：
+     - `geo_edit_mask_smooth_kernel=1`
+     - `geo_edit_mask_power=1.5`
+  2. 跑 `Sharper Mask + Stronger Edit`：
+     - `geo_edit_mask_smooth_kernel=1`
+     - `geo_edit_mask_power=1.5`
+     - `geo_edit_sigma_low=0.0`
+     - `geo_edit_sigma_high=1.2`
+  3. 目标:
+     - 尽量保住 `TRP` 改善
+     - 同时把 `SSIM/CC/UIQI` 拉回到 baseline 附近
+  4. 在 Stage 1.1 没做完之前，不进入 `trust map` / `dual-head`
+     - 先把 Stage 1 的 edit 区域控制收窄，再判断是否需要进入 Stage 2
+
 ### 回传模板（建议）
 
 - 时间:
@@ -680,7 +734,9 @@
 
 ## 7. 后续计划（短期）
 
-1. 跑完并汇总 4 组 Flow 高频约束实验（含 TRP 与 high-change 分桶）。
-2. 以当前两组结果为基线，优先验证 `grad+lap` 与 `grad+lap+rank` 是否能修复 `SSIM/CC/UIQI/TRP` 回退。
-3. 对比 baseline，确认是否达成“high-change 至少 5% 改善、overall 不明显回退”。
-4. 固化一版推荐默认配置（含权重与 mask 策略）；若稳定再迁移到 Diffusion 侧。
+1. 完成 `Geo-Edit Residual Flow` Stage 1.1 两组定向参数收缩实验：
+   - `Sharper Mask`
+   - `Sharper Mask + Stronger Edit`
+2. 重点观察 `TRP` 是否保持改善，同时 `SSIM/CC/UIQI` 是否回升。
+3. 若 Stage 1.1 成立，再进入 Stage 2 `Condition Trust Map`。
+4. 若 Stage 1.1 仍旧表现为“TRP 改善但结构一致性回退”，再考虑把 `Boundary/Topology` 约束提前，而不是立即上双头。

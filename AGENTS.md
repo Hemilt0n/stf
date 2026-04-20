@@ -131,6 +131,24 @@
   - `python -m compileall -q stf/models`
   - `uv run pytest -q tests/smoke/test_geo_edit_residual_flow.py`
   - 结果：`4 passed`
+- 已完成首轮远程实验:
+  - `runs/geo_edit/cia_compare_residualgaussianflow_geo_edit_stage1_500ep_20260416-190231`
+  - `epoch=499`:
+    - `val_loss=0.0059`, `RMSE=0.0334`, `MAE=0.0133`, `PSNR=30.7446`
+    - `SSIM=0.9014`, `CC=0.7542`, `ERGAS=3.1281`, `SAM=0.0651`, `UIQI=0.7428`, `TRP=-0.1597`
+- 与 residual baseline 对比:
+  - 正信号:
+    - `TRP` 明显改善（`-0.1757 -> -0.1597`）
+    - `PSNR/ERGAS/MAE/SAM` 小幅改善
+  - 回退项:
+    - `SSIM/CC/UIQI`
+  - 当前判断:
+    - 路线成立，但 edit 区域控制偏宽，低变化区域一致性被牺牲
+- 当前分支下一步:
+  - 优先做 `Stage 1.1` 参数收缩，而不是立刻进入 `trust map` / `dual-head`
+  - 推荐两组:
+    - `Sharper Mask`: `mask_smooth_kernel=1`, `mask_power=1.5`
+    - `Sharper Mask + Stronger Edit`: `mask_smooth_kernel=1`, `mask_power=1.5`, `sigma_low=0.0`, `sigma_high=1.2`
 
 ## 3.2 `fine_t1` warmup 严格配对复核（2026-04-01）
 
