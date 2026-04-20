@@ -131,42 +131,16 @@
   - `python -m compileall -q stf/models`
   - `uv run pytest -q tests/smoke/test_geo_edit_residual_flow.py`
   - 结果：`4 passed`
-- 已完成首轮远程实验:
-  - `runs/geo_edit/cia_compare_residualgaussianflow_geo_edit_stage1_500ep_20260416-190231`
-  - `epoch=499`:
-    - `val_loss=0.0059`, `RMSE=0.0334`, `MAE=0.0133`, `PSNR=30.7446`
-    - `SSIM=0.9014`, `CC=0.7542`, `ERGAS=3.1281`, `SAM=0.0651`, `UIQI=0.7428`, `TRP=-0.1597`
-- 与 residual baseline 对比:
-  - 正信号:
-    - `TRP` 明显改善（`-0.1757 -> -0.1597`）
-    - `PSNR/ERGAS/MAE/SAM` 小幅改善
-  - 回退项:
-    - `SSIM/CC/UIQI`
-  - 当前判断:
-    - 路线成立，但 edit 区域控制偏宽，低变化区域一致性被牺牲
+- 当前分支实验摘要:
+  - `geo_edit stage1` 是当前最佳 geo-edit 参考线。
+  - `Stage 1.1` 两组纯参数收缩（sharper mask / stronger edit）均未超过 `stage1`。
+  - 当前判断是问题更偏向 `mask` 质量，而不是单纯的 `sigma` 强度。
 - 当前分支下一步:
-  - 优先做 `Stage 1.1` 参数收缩，而不是立刻进入 `trust map` / `dual-head`
-  - 推荐两组:
-    - `Sharper Mask`: `mask_smooth_kernel=1`, `mask_power=1.5`
-    - `Sharper Mask + Stronger Edit`: `mask_smooth_kernel=1`, `mask_power=1.5`, `sigma_low=0.0`, `sigma_high=1.2`
+  - 转向 `mask refinement`，优先考虑多尺度软 mask 或 learned trust/refine mask。
+  - 在 `mask refinement` 验证前，不继续扩纯 `mask_power/sigma` sweep。
+- 实验明细与指标账本:
+  - 统一记录在 `docs/progress.md`，`AGENTS.md` 只保留恢复上下文所需摘要。
 
-## 3.2 `fine_t1` warmup 严格配对复核（2026-04-01）
-
-- 对比实验:
-  - baseline（严格配对）: `runs/flow/change_aware_fine_t1_baseline_matched_cia_20260331-173119`
-  - warmup: `runs/flow/change_aware_fine_t1_noise_warmup_200_cia_20260326-230345`
-- 对齐口径:
-  - 两边均使用 `tools/summarize_train_log.py` 按 epoch 聚合。
-  - 仅比较共同验证点（`49,99,...,499`），除 warmup 参数外其余保持一致。
-- `epoch=499` 结论:
-  - baseline 在 `val_loss/RMSE/PSNR/SSIM/CC/ERGAS/UIQI` 略优。
-  - warmup 在 `MAE/SAM/TRP` 略优。
-- `warmup_200` vs `warmup_200_tail`（`runs/flow/change_aware_fine_t1_noise_warmup_200_tail_20260331-225043`）:
-  - 在共同验证点 `49,99,...,499` 下，`warmup_200_tail` 仅 `TRP` 更优，其余主指标整体回退。
-  - 当前 `fine_t1_noise_alpha_tail=0.1` 不作为默认推荐参数。
-- 总结:
-  - warmup 参数对训练动力学有效（前期抑制捷径、后期追回），但本轮严格配对下未形成最终整体指标优势。
-  - 后续优先验证“更弱 tail（更小 alpha）+ consistency”组合，而非直接复用 `alpha_tail=0.1`。
 ## 4. 分支协作与同步规范
 
 - `AGENTS.md` 建议作为“主干基线文档”:
